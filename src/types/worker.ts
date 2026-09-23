@@ -10,7 +10,11 @@ export interface WorkerProfile {
   code: string; // e.g. EMP-4200
   role: string;
   shift: 'A' | 'B' | 'C';
-  zone: string; // e.g. Level 1 — North Drift
+  zone: string; // Backward compatibility helper (currentWorkZone || assignedZone)
+  assignedZone: string; // Default scheduled zone
+  currentWorkZone: string | null; // Currently checked-in zone (null if checked out)
+  checkInTime: string | null; // ISO timestamp
+  checkOutTime: string | null; // ISO timestamp
   assignedHelmetId: string;
   battery: number;
 }

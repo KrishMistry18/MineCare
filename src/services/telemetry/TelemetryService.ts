@@ -19,13 +19,14 @@ import type { HelmetTelemetryPacket, TelemetryHistoryPoint, ScenarioType } from 
 import type { SafetyEvaluationResult } from '../../types/safety';
 import type { HelmetDevice, ConnectivityStatus } from '../../types/helmet';
 import type { SafetyAlert } from '../../types/alert';
-import { INITIAL_WORKERS } from '../../data/mockData';
+import { ZoneAssignmentProvider } from '../zones/ZoneAssignmentProvider';
 
 export type ServiceListener = () => void;
 
 export class TelemetryService {
   private static instance: TelemetryService | null = null;
   private provider: ITelemetryProvider;
+  private zoneProvider: ZoneAssignmentProvider;
   private unsubscribeProvider: (() => void) | null = null;
 
   // State caches
@@ -42,6 +43,7 @@ export class TelemetryService {
 
   private constructor() {
     this.provider = new MockTelemetryProvider();
+    this.zoneProvider = ZoneAssignmentProvider.getInstance();
     this.init();
   }
 
@@ -56,6 +58,11 @@ export class TelemetryService {
     // Start listening to provider
     this.unsubscribeProvider = this.provider.subscribeAll((packet) => {
       this.handleIncomingPacket(packet);
+    });
+
+    // Listen to zone assignment updates
+    this.zoneProvider.subscribe(() => {
+      this.notifyListeners();
     });
 
     // Check for offline helmets every 3 seconds
@@ -207,7 +214,7 @@ export class TelemetryService {
 
     this.lastAlertTriggers.set(helmetId, triggerKey);
 
-      const worker = INITIAL_WORKERS.find(w => w.assignedHelmetId === helmetId);
+      const worker = this.zoneProvider.getWorkerByHelmetId(helmetId);
       const isCritical = safety.status === 'DANGER';
 
       let category: SafetyAlert['category'] = 'GAS_HAZARD';
@@ -222,7 +229,7 @@ export class TelemetryService {
         helmetId,
         workerId: worker?.workerId || 'UNKNOWN',
         workerName: worker?.name || `Worker (${helmetId})`,
-        shaftLocation: worker?.zone || 'Portal / Surface',
+        shaftLocation: worker?.currentWorkZone || worker?.assignedZone || 'Portal / Surface',
         severity: isCritical ? 'CRITICAL' : 'WARNING',
         safetyStatus: safety.status,
         category,
@@ -260,14 +267,14 @@ export class TelemetryService {
         this.connectivityStates.set(helmetId, 'OFFLINE');
         changed = true;
 
-        const worker = INITIAL_WORKERS.find(w => w.assignedHelmetId === helmetId);
+        const worker = this.zoneProvider.getWorkerByHelmetId(helmetId);
         this.alerts.unshift({
           id: `ALT-OFFLINE-${Date.now()}`,
           timestamp: new Date().toISOString(),
           helmetId,
           workerId: worker?.workerId || 'UNKNOWN',
           workerName: worker?.name || `Worker (${helmetId})`,
-          shaftLocation: worker?.zone || 'Portal / Surface',
+          shaftLocation: worker?.currentWorkZone || worker?.assignedZone || 'Portal / Surface',
           severity: 'WARNING',
           safetyStatus: 'WARNING',
           category: 'HELMET_OFFLINE',
@@ -294,6 +301,10 @@ export class TelemetryService {
 
   // --- Public Data Accessors ---
 
+  public getZoneProvider(): ZoneAssignmentProvider {
+    return this.zoneProvider;
+  }
+
   public getHelmets(): HelmetDevice[] {
     const registeredIds = this.provider.getRegisteredHelmetIds();
 
@@ -301,14 +312,18 @@ export class TelemetryService {
       const telemetry = this.latestPackets.get(id) || this.createPlaceholderPacket(id);
       const safety = this.safetyStates.get(id) || SafetyEvaluator.evaluate(telemetry);
       const connectivity = this.connectivityStates.get(id) || 'ONLINE';
-      const worker = INITIAL_WORKERS.find(w => w.assignedHelmetId === id);
+      const worker = this.zoneProvider.getWorkerByHelmetId(id);
+      const currentWorkZone = worker?.currentWorkZone ?? null;
+      const assignedZone = worker?.assignedZone || 'Portal / Surface';
 
       return {
         helmetId: id,
         serialNumber: `SN-MC8266-${id.replace('MC-', '00')}`,
         firmwareVersion: 'v1.4.2-proto',
         assignedWorkerId: worker?.workerId || null,
-        assignedShaft: worker?.zone || 'Portal / Surface',
+        assignedShaft: currentWorkZone || 'Checked Out',
+        assignedZone,
+        currentWorkZone,
         connectivity,
         lastHeartbeat: telemetry.timestamp,
         telemetry,

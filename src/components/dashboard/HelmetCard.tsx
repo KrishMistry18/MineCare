@@ -12,7 +12,7 @@ import {
   Battery
 } from 'lucide-react';
 import type { HelmetDevice } from '../../types/helmet';
-import { INITIAL_WORKERS } from '../../data/mockData';
+import { useTelemetry } from '../../context/TelemetryContext';
 
 interface HelmetCardProps {
   helmet: HelmetDevice;
@@ -20,7 +20,8 @@ interface HelmetCardProps {
 }
 
 export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
-  const worker = INITIAL_WORKERS.find(w => w.assignedHelmetId === helmet.helmetId);
+  const { workers } = useTelemetry();
+  const worker = workers.find(w => w.assignedHelmetId === helmet.helmetId);
   const { telemetry, safety, connectivity } = helmet;
 
   const isDanger = safety.status === 'DANGER';

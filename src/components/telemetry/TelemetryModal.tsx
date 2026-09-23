@@ -18,11 +18,15 @@ import {
   X, 
   Wind, 
   Activity, 
-  HardHat
+  HardHat,
+  MapPin,
+  Clock,
+  LogOut,
+  ArrowRightLeft
 } from 'lucide-react';
 import { useTelemetry } from '../../context/TelemetryContext';
-import { INITIAL_WORKERS } from '../../data/mockData';
 import { PROTOTYPE_THRESHOLDS } from '../../types/safety';
+import { INITIAL_MINE_ZONES } from '../../types/zone';
 
 interface TelemetryModalProps {
   helmetId: string | null;
@@ -30,17 +34,24 @@ interface TelemetryModalProps {
 }
 
 export const TelemetryModal: React.FC<TelemetryModalProps> = ({ helmetId, onClose }) => {
-  const { helmets, getTelemetryHistory } = useTelemetry();
+  const { 
+    helmets, 
+    workers, 
+    getTelemetryHistory, 
+    changeWorkerZone, 
+    checkOutWorker 
+  } = useTelemetry();
 
   if (!helmetId) return null;
 
   const helmet = helmets.find(h => h.helmetId === helmetId);
-  const worker = INITIAL_WORKERS.find(w => w.assignedHelmetId === helmetId);
+  const worker = workers.find(w => w.assignedHelmetId === helmetId);
   const historyData = getTelemetryHistory(helmetId).slice(-40);
 
   if (!helmet) return null;
 
   const { telemetry, safety } = helmet;
+  const isCheckedIn = Boolean(worker?.currentWorkZone);
 
   return (
     <div 
@@ -67,7 +78,7 @@ export const TelemetryModal: React.FC<TelemetryModalProps> = ({ helmetId, onClos
                 <span className="text-xs text-slate-400">{worker?.role}</span>
               </div>
               <div className="text-xs text-slate-400 mt-0.5">
-                {helmet.assignedShaft} · Battery {worker?.battery}% · RSSI {telemetry.rssi} dBm
+                {worker?.currentWorkZone ? `Zone: ${worker.currentWorkZone}` : 'Checked Out (Off-Shift)'} · Battery {worker?.battery}% · RSSI {telemetry.rssi} dBm
               </div>
             </div>
           </div>
@@ -78,6 +89,73 @@ export const TelemetryModal: React.FC<TelemetryModalProps> = ({ helmetId, onClos
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* Supervisor Zone Assignment Banner */}
+        <div className="bg-[#090e18] border-b border-[#162235] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-1.5 text-slate-400 font-mono">
+              <MapPin className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Current Work Zone:</span>
+              <span className="font-semibold text-white">
+                {worker?.currentWorkZone || 'Checked Out'}
+              </span>
+            </div>
+
+            <div className="text-slate-500 hidden sm:inline">•</div>
+
+            <div className="text-[11px] text-slate-400 font-mono hidden sm:inline">
+              Scheduled: {worker?.assignedZone}
+            </div>
+
+            {worker?.checkInTime && isCheckedIn && (
+              <div className="text-[11px] text-slate-400 font-mono flex items-center space-x-1">
+                <Clock className="w-3 h-3 text-slate-500" />
+                <span>In: {new Date(worker.checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Quick Zone Change & Check-Out Controls */}
+          <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1 text-[11px]">
+              <span className="text-slate-400">Reassign:</span>
+              <select
+                value={worker?.currentWorkZone || ''}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    changeWorkerZone(helmet.helmetId, e.target.value);
+                  }
+                }}
+                className="bg-[#0f1726] border border-[#22334c] text-xs rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-cyan-500 cursor-pointer"
+              >
+                <option value="" disabled>Change Zone...</option>
+                {INITIAL_MINE_ZONES.map((z) => (
+                  <option key={z.id} value={z.name}>
+                    {z.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {isCheckedIn ? (
+              <button
+                onClick={() => checkOutWorker(helmet.helmetId)}
+                className="px-2.5 py-1 rounded-lg bg-[#1f1518] hover:bg-[#2e1d22] text-rose-300 text-[11px] font-medium flex items-center space-x-1 border border-rose-900/50 transition cursor-pointer"
+              >
+                <LogOut className="w-3 h-3" />
+                <span>Check Out</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => changeWorkerZone(helmet.helmetId, worker?.assignedZone || 'Portal / Surface')}
+                className="px-2.5 py-1 rounded-lg bg-[#0e221b] hover:bg-[#153429] text-emerald-300 text-[11px] font-medium flex items-center space-x-1 border border-emerald-900/50 transition cursor-pointer"
+              >
+                <ArrowRightLeft className="w-3 h-3" />
+                <span>Check In</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Modal Body */}

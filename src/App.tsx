@@ -27,12 +27,28 @@ const AppContent: React.FC = () => {
 
   const [inspectedHelmetId, setInspectedHelmetId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [fleetOptions, setFleetOptions] = useState<{ zone?: string | null; view?: 'GRID' | 'MAP' }>({
+    view: 'GRID',
+    zone: null,
+  });
 
   // Sync browser URL on route change
   const navigateTo = (route: NavRoute) => {
     setCurrentRoute(route);
     window.history.pushState({}, '', route);
     setMobileMenuOpen(false);
+  };
+
+  const handleNavigateToFleet = (options?: { zone?: string; view?: 'GRID' | 'MAP' }) => {
+    if (options) {
+      setFleetOptions({
+        view: options.view || 'MAP',
+        zone: options.zone || null,
+      });
+    } else {
+      setFleetOptions({ view: 'GRID', zone: null });
+    }
+    navigateTo('/fleet');
   };
 
   useEffect(() => {
@@ -87,13 +103,17 @@ const AppContent: React.FC = () => {
         <main className="flex-1 p-4 md:p-8 max-w-7xl w-full mx-auto">
           {currentRoute === '/' && (
             <ControlRoomDashboard
-              onNavigateToFleet={() => navigateTo('/fleet')}
+              onNavigateToFleet={handleNavigateToFleet}
               onInspectHelmet={setInspectedHelmetId}
             />
           )}
 
           {currentRoute === '/fleet' && (
-            <HelmetsPage onInspectHelmet={setInspectedHelmetId} />
+            <HelmetsPage 
+              onInspectHelmet={setInspectedHelmetId} 
+              initialView={fleetOptions.view || 'GRID'}
+              initialZone={fleetOptions.zone || null}
+            />
           )}
 
           {currentRoute === '/workers' && (

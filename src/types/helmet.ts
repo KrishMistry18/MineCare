@@ -89,6 +89,8 @@ export interface HelmetDevice {
   firmwareVersion: string;
   assignedWorkerId: string | null;
   assignedShaft: string;
+  assignedZone?: string;
+  currentWorkZone?: string | null;
   connectivity: ConnectivityStatus;
   lastHeartbeat: string;
   telemetry: HelmetTelemetryPacket;

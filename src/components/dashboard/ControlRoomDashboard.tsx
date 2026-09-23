@@ -14,9 +14,10 @@ import {
 import { useTelemetry } from '../../context/TelemetryContext';
 import { HelmetCard } from './HelmetCard';
 import { SimulationConsole } from './SimulationConsole';
+import { ZoneOccupancyWidget } from './ZoneOccupancyWidget';
 
 interface ControlRoomDashboardProps {
-  onNavigateToFleet: () => void;
+  onNavigateToFleet: (options?: { zone?: string; view?: 'GRID' | 'MAP' }) => void;
   onInspectHelmet: (helmetId: string) => void;
 }
 
@@ -24,7 +25,14 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
   onNavigateToFleet, 
   onInspectHelmet 
 }) => {
-  const { helmets, alerts, activeDangerCount, activeWarningCount, resolveAlert } = useTelemetry();
+  const { 
+    helmets, 
+    alerts, 
+    activeDangerCount, 
+    activeWarningCount, 
+    resolveAlert,
+    zoneOccupancies
+  } = useTelemetry();
 
   const [lastFrameTime, setLastFrameTime] = useState<string>('');
 
@@ -163,7 +171,7 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
             </div>
 
             <button
-              onClick={onNavigateToFleet}
+              onClick={() => onNavigateToFleet()}
               className="text-xs text-sky-400 hover:text-sky-300 font-medium hover:underline flex items-center space-x-1"
             >
               <span>View all helmets</span>
@@ -183,10 +191,16 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
           </div>
         </div>
 
-        {/* Right Column: Active alerts & Simulation console (4 of 12 columns on lg) */}
+        {/* Right Column: Zone Occupancy, Active alerts & Simulation console (4 of 12 columns on lg) */}
         <div className="lg:col-span-4 space-y-4 lg:sticky lg:top-6 self-start">
           
-          {/* Card 1: Active alerts */}
+          {/* Card 1: Zone Occupancy Overview */}
+          <ZoneOccupancyWidget
+            zoneOccupancies={zoneOccupancies}
+            onNavigateToZoneMap={(zoneName) => onNavigateToFleet({ zone: zoneName, view: 'MAP' })}
+          />
+
+          {/* Card 2: Active alerts */}
           <div className="bg-[#0c131f] border border-[#182335] rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-white text-sm">
