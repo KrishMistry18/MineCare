@@ -13,6 +13,8 @@ import { type MineZone, type ZoneOccupancySummary, INITIAL_MINE_ZONES } from '..
 import type { WorkerProfile } from '../../types/worker';
 import type { HelmetDevice } from '../../types/helmet';
 import { INITIAL_WORKERS } from '../../data/mockData';
+import { workerService } from '../api/workerService';
+import { DatabaseRepository } from '../../backend/db/DatabaseRepository';
 
 export class ZoneAssignmentProvider implements IZoneAssignmentProvider {
   private static instance: ZoneAssignmentProvider | null = null;
@@ -60,6 +62,21 @@ export class ZoneAssignmentProvider implements IZoneAssignmentProvider {
     worker.checkInTime = new Date().toISOString();
     worker.checkOutTime = null;
 
+    // Persist to authoritative relational database
+    try {
+      DatabaseRepository.getInstance().createZoneAssignment(
+        worker.workerId,
+        helmetId,
+        targetZone.id,
+        'CHECK_IN'
+      );
+    } catch {
+      // Fallback
+    }
+
+    // Call versioned worker API (/api/v1/workers/:id/check-in)
+    workerService.checkIn(worker.workerId, targetZone.id).catch(() => {});
+
     this.notifyListeners();
     return true;
   }
@@ -71,6 +88,16 @@ export class ZoneAssignmentProvider implements IZoneAssignmentProvider {
     worker.currentWorkZone = null;
     worker.zone = 'Checked Out';
     worker.checkOutTime = new Date().toISOString();
+
+    // Persist to authoritative relational database
+    try {
+      DatabaseRepository.getInstance().checkOutWorker(worker.workerId);
+    } catch {
+      // Fallback
+    }
+
+    // Call versioned worker API (/api/v1/workers/:id/check-out)
+    workerService.checkOut(worker.workerId).catch(() => {});
 
     this.notifyListeners();
     return true;
@@ -92,6 +119,21 @@ export class ZoneAssignmentProvider implements IZoneAssignmentProvider {
       worker.checkInTime = new Date().toISOString();
       worker.checkOutTime = null;
     }
+
+    // Persist to authoritative relational database
+    try {
+      DatabaseRepository.getInstance().createZoneAssignment(
+        worker.workerId,
+        helmetId,
+        targetZone.id,
+        'SUPERVISOR_REASSIGN'
+      );
+    } catch {
+      // Fallback
+    }
+
+    // Call versioned worker API (/api/v1/workers/:id/zone)
+    workerService.reassignZone(worker.workerId, targetZone.id, updateDefaultAssignment).catch(() => {});
 
     this.notifyListeners();
     return true;

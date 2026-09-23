@@ -20,6 +20,9 @@ import type { SafetyEvaluationResult } from '../../types/safety';
 import type { HelmetDevice, ConnectivityStatus } from '../../types/helmet';
 import type { SafetyAlert } from '../../types/alert';
 import { ZoneAssignmentProvider } from '../zones/ZoneAssignmentProvider';
+import { alertService } from '../api/alertService';
+import { DatabaseRepository } from '../../backend/db/DatabaseRepository';
+import { AlertEngine } from '../../backend/alerts/AlertEngine';
 
 export type ServiceListener = () => void;
 
@@ -350,6 +353,18 @@ export class TelemetryService {
       alert.acknowledged = true;
       alert.acknowledgedBy = supervisorName;
       alert.acknowledgedAt = new Date().toISOString();
+
+      try {
+        AlertEngine.acknowledge(
+          DatabaseRepository.getInstance().getAlertsStore(),
+          alertId,
+          supervisorName
+        );
+      } catch {
+        // Fallback
+      }
+
+      alertService.acknowledgeAlert(alertId, supervisorName).catch(() => {});
       this.notifyListeners();
     }
   }
@@ -360,6 +375,18 @@ export class TelemetryService {
       alert.resolved = true;
       alert.resolvedAt = new Date().toISOString();
       if (notes) alert.supervisorNotes = notes;
+
+      try {
+        AlertEngine.resolve(
+          DatabaseRepository.getInstance().getAlertsStore(),
+          alertId,
+          notes
+        );
+      } catch {
+        // Fallback
+      }
+
+      alertService.resolveAlert(alertId, notes).catch(() => {});
       this.notifyListeners();
     }
   }

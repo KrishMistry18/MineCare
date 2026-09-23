@@ -9,6 +9,8 @@ import type { ITelemetryProvider, TelemetryCallback, Unsubscribe } from './ITele
 import type { HelmetTelemetryPacket, ScenarioType } from '../../types/telemetry';
 import { SafetyEvaluator } from './SafetyEvaluator';
 import { INITIAL_WORKERS } from '../../data/mockData';
+import { telemetryApiService } from '../api/telemetryService';
+import { DatabaseRepository } from '../../backend/db/DatabaseRepository';
 
 interface HelmetSimState {
   helmetId: string;
@@ -305,6 +307,57 @@ export class MockTelemetryProvider implements ITelemetryProvider {
         rssi: state.rssi,
         batteryVolts: Number(state.battery),
       };
+
+      // Ingest through versioned Telemetry API (/api/v1/telemetry)
+      telemetryApiService
+        .sendTelemetry({
+          packetId: packet.packetId,
+          helmetId: packet.helmetId,
+          timestamp: packet.timestamp,
+          sequenceNumber: packet.sequenceNumber,
+          temperature: packet.dht22.temperature,
+          humidity: packet.dht22.humidity,
+          gasValue: packet.mq2.rawGasValue,
+          accelX: packet.mpu6050.accelX,
+          accelY: packet.mpu6050.accelY,
+          accelZ: packet.mpu6050.accelZ,
+          totalAcceleration: packet.mpu6050.totalAcceleration,
+          gyroX: packet.mpu6050.gyroX,
+          gyroY: packet.mpu6050.gyroY,
+          gyroZ: packet.mpu6050.gyroZ,
+          fallDetected: packet.fallDetected,
+          sosPressed: packet.sosPressed,
+          batteryVolts: packet.batteryVolts,
+          rssi: packet.rssi,
+        })
+        .catch(() => {
+          // Graceful fallback for offline / test environments
+          try {
+            const db = DatabaseRepository.getInstance();
+            db.saveTelemetry({
+              id: packet.packetId,
+              helmet_id: packet.helmetId,
+              timestamp: packet.timestamp,
+              sequence_number: packet.sequenceNumber,
+              temperature: packet.dht22.temperature,
+              humidity: packet.dht22.humidity,
+              gas_value: packet.mq2.rawGasValue,
+              acceleration_x: packet.mpu6050.accelX,
+              acceleration_y: packet.mpu6050.accelY,
+              acceleration_z: packet.mpu6050.accelZ,
+              total_acceleration: packet.mpu6050.totalAcceleration,
+              gyro_x: packet.mpu6050.gyroX,
+              gyro_y: packet.mpu6050.gyroY,
+              gyro_z: packet.mpu6050.gyroZ,
+              fall_detected: packet.fallDetected,
+              sos_pressed: packet.sosPressed,
+              safety_status: safetyEval.status,
+              created_at: new Date().toISOString(),
+            });
+          } catch {
+            // Ignore offline fallback error
+          }
+        });
 
       this.subscribers.forEach(cb => {
         try { cb(packet); } catch (e) { console.error('Error in telemetry subscriber', e); }
