@@ -6,13 +6,17 @@
 import React from 'react';
 import { 
   Radio, 
-  Info
+  Info,
+  ShieldCheck
 } from 'lucide-react';
 import { useTelemetry } from '../../context/TelemetryContext';
+import { useAuth } from '../../context/AuthContext';
 import { HARDWARE_PINOUT_SPEC } from '../../types/helmet';
 
 export const SystemHealthPage: React.FC = () => {
   const { helmets, alerts } = useTelemetry();
+  const { role, isAuthenticated } = useAuth();
+
 
   const totalHelmets = helmets.length;
   const onlineHelmets = helmets.filter(h => h.connectivity === 'ONLINE').length;
@@ -26,12 +30,13 @@ export const SystemHealthPage: React.FC = () => {
           System health
         </h1>
         <p className="text-xs text-slate-400 mt-1">
-          Telemetry pipeline, alert engine, and hardware interface status.
+          Telemetry pipeline, alert engine, database, and authentication status.
         </p>
       </div>
 
       {/* Primary Status Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
+
         <div className="bg-[#0c131f] border border-[#182335] rounded-xl p-4 space-y-2">
           <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider font-semibold">
             SYSTEM STATUS
@@ -93,7 +98,21 @@ export const SystemHealthPage: React.FC = () => {
             {activeAlerts} active incident{activeAlerts === 1 ? '' : 's'}
           </div>
         </div>
+
+        <div className="bg-[#0c131f] border border-[#182335] rounded-xl p-4 space-y-2">
+          <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider font-semibold">
+            AUTHENTICATION
+          </div>
+          <div className="text-base font-bold text-purple-400 flex items-center space-x-1.5 font-mono">
+            <ShieldCheck className="w-4 h-4 text-purple-400" />
+            <span>{isAuthenticated ? 'ENFORCED' : 'OFFLINE'}</span>
+          </div>
+          <div className="text-[11px] text-slate-500 font-mono truncate">
+            {role ? `Role: ${role}` : 'RLS Least-Privilege'}
+          </div>
+        </div>
       </div>
+
 
       {/* Hardware Decoupling Notice Card */}
       <div className="p-4 rounded-xl bg-[#0d1522] border border-[#1a263a] flex items-start space-x-3 text-xs">

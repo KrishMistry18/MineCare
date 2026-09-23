@@ -1,9 +1,10 @@
 /**
  * MineCare - Smart Mine Safety Helmet Platform
- * Frontend Rebuild with Lovable Reference Parity
+ * Frontend Rebuild with Lovable Reference Parity + RBAC & Authentication
  */
 
 import React, { useState, useEffect } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { TelemetryProvider } from './context/TelemetryContext';
 import { Sidebar, type NavRoute } from './components/layout/Sidebar';
 import { ControlRoomDashboard } from './components/dashboard/ControlRoomDashboard';
@@ -13,13 +14,19 @@ import { AlertsPage } from './components/alerts/AlertsPage';
 import { AnalyticsPage } from './components/analytics/AnalyticsPage';
 import { SystemHealthPage } from './components/system/SystemHealthPage';
 import { TelemetryModal } from './components/telemetry/TelemetryModal';
-import { Menu, X } from 'lucide-react';
+import { LoginPage } from './components/auth/LoginPage';
+import { WorkerPortalPage } from './components/worker/WorkerPortalPage';
+import { AdminConsolePage } from './components/admin/AdminConsolePage';
+import { UserMenu } from './components/auth/UserMenu';
+import { Menu, X, HardHat, Loader2 } from 'lucide-react';
 
 const AppContent: React.FC = () => {
+  const { user, role, isLoading, isAuthenticated } = useAuth();
+
   // Sync route with window.location.pathname or fallback to '/'
   const [currentRoute, setCurrentRoute] = useState<NavRoute>(() => {
     const path = window.location.pathname as NavRoute;
-    if (['/', '/fleet', '/workers', '/alerts', '/analytics', '/system'].includes(path)) {
+    if (['/', '/fleet', '/workers', '/alerts', '/analytics', '/system', '/admin', '/worker'].includes(path)) {
       return path;
     }
     return '/';
@@ -54,7 +61,7 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname as NavRoute;
-      if (['/', '/fleet', '/workers', '/alerts', '/analytics', '/system'].includes(path)) {
+      if (['/', '/fleet', '/workers', '/alerts', '/analytics', '/system', '/admin', '/worker'].includes(path)) {
         setCurrentRoute(path);
       }
     };
@@ -62,6 +69,61 @@ const AppContent: React.FC = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  // Route protection redirect effect
+  useEffect(() => {
+    if (!isAuthenticated) {
+      if (window.location.pathname !== '/login') {
+        window.history.replaceState({}, '', '/login');
+      }
+      return;
+    }
+
+    if (role === 'WORKER') {
+      if (currentRoute !== '/worker') {
+        setCurrentRoute('/worker');
+        window.history.replaceState({}, '', '/worker');
+      }
+    } else if (role === 'SUPERVISOR') {
+      if (currentRoute === '/admin' || currentRoute === '/worker') {
+        setCurrentRoute('/');
+        window.history.replaceState({}, '', '/');
+      }
+    }
+  }, [isAuthenticated, role, currentRoute]);
+
+  // Loading Splash Screen (avoids flashing protected routes)
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#080c14] flex flex-col items-center justify-center text-slate-400 font-mono text-xs space-y-4">
+        <div className="w-12 h-12 rounded-2xl bg-cyan-950/80 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shadow-xl shadow-cyan-950/60 animate-pulse">
+          <HardHat className="w-6 h-6" />
+        </div>
+        <div className="flex items-center space-x-2 text-cyan-300">
+          <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+          <span className="tracking-wider">VERIFYING MINECARE SECURITY SESSION...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Unauthenticated user -> Login Page
+  if (!isAuthenticated || !user) {
+    return (
+      <LoginPage
+        onSuccess={() => {
+          const next = role === 'WORKER' ? '/worker' : '/';
+          navigateTo(next as NavRoute);
+        }}
+      />
+    );
+  }
+
+  // Worker Role -> Dedicated Worker Self-Service Portal
+  if (role === 'WORKER') {
+    return <WorkerPortalPage />;
+  }
+
+  // Supervisor & Admin Roles -> Control Room Operations Console
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 flex font-sans selection:bg-cyan-500/20 selection:text-cyan-200">
       
@@ -96,7 +158,7 @@ const AppContent: React.FC = () => {
           <span className="font-bold text-white text-sm font-mono">
             MINECARE
           </span>
-          <div className="w-6" />
+          <UserMenu compact />
         </div>
 
         {/* Page Container */}
@@ -131,6 +193,10 @@ const AppContent: React.FC = () => {
           {currentRoute === '/system' && (
             <SystemHealthPage />
           )}
+
+          {currentRoute === '/admin' && role === 'ADMIN' && (
+            <AdminConsolePage />
+          )}
         </main>
       </div>
 
@@ -145,9 +211,11 @@ const AppContent: React.FC = () => {
 
 export function App() {
   return (
-    <TelemetryProvider>
-      <AppContent />
-    </TelemetryProvider>
+    <AuthProvider>
+      <TelemetryProvider>
+        <AppContent />
+      </TelemetryProvider>
+    </AuthProvider>
   );
 }
 

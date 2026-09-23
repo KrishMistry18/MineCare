@@ -14,6 +14,9 @@ import type {
   DbZoneAssignment,
   DbTelemetry,
   DbAlert,
+  DbUserProfile,
+  DbAuditLog,
+  AuthSession,
   SystemHealthStatus,
 } from '../types';
 import { INITIAL_MINE_ZONES } from '../../types/zone';
@@ -29,6 +32,9 @@ export class DatabaseRepository {
   private zoneAssignments: DbZoneAssignment[] = [];
   private telemetryStore: Map<string, DbTelemetry[]> = new Map(); // helmetId -> DbTelemetry[]
   private alertsStore: DbAlert[] = [];
+  private profiles: Map<string, DbUserProfile> = new Map();
+  private auditLogs: DbAuditLog[] = [];
+  private activeSessions: Map<string, AuthSession> = new Map();
 
   private startTime: number = Date.now();
   private supabaseConfigured: boolean = false;
@@ -115,6 +121,58 @@ export class DatabaseRepository {
         active: true,
         created_at: now,
       });
+    });
+
+    // 5. Seed Canonical User Profiles
+    const defaultProfiles: DbUserProfile[] = [
+      {
+        id: 'PRF-001',
+        auth_user_id: 'auth-admin-001',
+        name: 'Admin Operator',
+        email: 'admin@minecare.local',
+        role: 'ADMIN',
+        worker_id: null,
+        active: true,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: 'PRF-002',
+        auth_user_id: 'auth-sup-001',
+        name: 'R. Supervisor',
+        email: 'supervisor@minecare.local',
+        role: 'SUPERVISOR',
+        worker_id: null,
+        active: true,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: 'PRF-003',
+        auth_user_id: 'auth-wrk-001',
+        name: 'R. Marak',
+        email: 'worker.marak@minecare.local',
+        role: 'WORKER',
+        worker_id: 'WRK-001',
+        active: true,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: 'PRF-004',
+        auth_user_id: 'auth-wrk-002',
+        name: 'S. Kujur',
+        email: 'worker.kujur@minecare.local',
+        role: 'WORKER',
+        worker_id: 'WRK-002',
+        active: true,
+        created_at: now,
+        updated_at: now,
+      },
+    ];
+
+    defaultProfiles.forEach((p) => {
+      this.profiles.set(p.id, p);
     });
   }
 
@@ -329,6 +387,86 @@ export class DatabaseRepository {
     return this.alertsStore.filter((a) => a.status === 'RESOLVED');
   }
 
+  // ==================== PROFILES & AUTH ====================
+
+  public getProfiles(): DbUserProfile[] {
+    return Array.from(this.profiles.values());
+  }
+
+  public getAllProfiles(): DbUserProfile[] {
+    return this.getProfiles();
+  }
+
+  public getProfileById(id: string): DbUserProfile | undefined {
+    return this.profiles.get(id);
+  }
+
+  public getProfile(id: string): DbUserProfile | undefined {
+    return this.profiles.get(id);
+  }
+
+
+  public getProfileByEmail(email: string): DbUserProfile | undefined {
+    return Array.from(this.profiles.values()).find(
+      (p) => p.email.toLowerCase() === email.toLowerCase()
+    );
+  }
+
+  public getProfileByAuthId(authId: string): DbUserProfile | undefined {
+    return Array.from(this.profiles.values()).find((p) => p.auth_user_id === authId);
+  }
+
+  public createProfile(profile: DbUserProfile): DbUserProfile {
+    this.profiles.set(profile.id, profile);
+    return profile;
+  }
+
+  public updateProfile(id: string, updates: Partial<DbUserProfile>): DbUserProfile | undefined {
+    const profile = this.profiles.get(id);
+    if (!profile) return undefined;
+    Object.assign(profile, updates, { updated_at: new Date().toISOString() });
+    return profile;
+  }
+
+  // ==================== SESSIONS ====================
+
+  public saveSession(session: AuthSession): void {
+    this.activeSessions.set(session.token, session);
+  }
+
+  public getSession(token: string): AuthSession | undefined {
+    const session = this.activeSessions.get(token);
+    if (!session) return undefined;
+    if (session.expires_at < Date.now()) {
+      this.activeSessions.delete(token);
+      return undefined;
+    }
+    return session;
+  }
+
+  public deleteSession(token: string): boolean {
+    return this.activeSessions.delete(token);
+  }
+
+  // ==================== AUDIT LOGS ====================
+
+  public logAuditAction(entry: Omit<DbAuditLog, 'id' | 'created_at'>): DbAuditLog {
+    const log: DbAuditLog = {
+      ...entry,
+      id: `LOG-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      created_at: new Date().toISOString(),
+    };
+    this.auditLogs.unshift(log);
+    if (this.auditLogs.length > 500) {
+      this.auditLogs.pop();
+    }
+    return log;
+  }
+
+  public getAuditLogs(limit: number = 100): DbAuditLog[] {
+    return this.auditLogs.slice(0, limit);
+  }
+
   // ==================== SYSTEM HEALTH ====================
 
   public getSystemHealth(): SystemHealthStatus {
@@ -344,14 +482,20 @@ export class DatabaseRepository {
       timestamp: new Date().toISOString(),
       uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000),
       services: {
-        backend: { status: 'ONLINE', port: 3001, version: '2.0.0-phase2' },
+        backend: { status: 'ONLINE', port: 3001, version: '3.0.0-phase3' },
         database: {
           status: this.supabaseConfigured ? 'CONNECTED' : 'LOCAL_FALLBACK',
           engine: this.supabaseConfigured ? 'Supabase PostgreSQL' : 'Embedded Relational Memory',
-          activeRecords: this.zones.size + this.workers.size + this.helmets.size + this.alertsStore.length,
+          activeRecords: this.zones.size + this.workers.size + this.helmets.size + this.alertsStore.length + this.profiles.size,
         },
         telemetrySource: { status: 'STREAMING', producer: 'MockTelemetryProvider', packetRateHz: 0.5 },
         realtime: { status: 'ACTIVE', provider: this.supabaseConfigured ? 'Supabase Realtime' : 'Event Bus' },
+        auth: {
+          status: 'OPERATIONAL',
+          provider: this.supabaseConfigured ? 'Supabase Auth' : 'Local Auth Provider',
+          totalUsers: this.profiles.size,
+          rlsEnforced: true,
+        },
       },
       metrics: {
         totalHelmets,

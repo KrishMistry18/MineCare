@@ -7,6 +7,38 @@ import type { AlertSeverity, AlertCategory } from '../types/alert';
 
 export type ConnectivityState = 'ONLINE' | 'STALE' | 'OFFLINE';
 
+export type UserRole = 'ADMIN' | 'SUPERVISOR' | 'WORKER';
+
+export interface DbUserProfile {
+  id: string;
+  auth_user_id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  worker_id: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DbAuditLog {
+  id: string;
+  user_id: string;
+  user_email: string;
+  role: UserRole;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details?: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AuthSession {
+  token: string;
+  user: DbUserProfile;
+  expires_at: number;
+}
+
 export interface DbMineZone {
   id: string;
   name: string;
@@ -174,6 +206,7 @@ export interface SystemHealthStatus {
     database: { status: 'CONNECTED' | 'LOCAL_FALLBACK' | 'ERROR'; engine: string; activeRecords: number };
     telemetrySource: { status: 'STREAMING' | 'IDLE'; producer: string; packetRateHz: number };
     realtime: { status: 'ACTIVE' | 'POLLING_FALLBACK'; provider: string };
+    auth: { status: 'OPERATIONAL' | 'DEGRADED'; provider: string; totalUsers: number; rlsEnforced: boolean };
   };
   metrics: {
     totalHelmets: number;

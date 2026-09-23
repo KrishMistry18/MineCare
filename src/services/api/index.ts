@@ -9,3 +9,4 @@ export * from './zoneService';
 export * from './alertService';
 export * from './telemetryService';
 export * from './systemService';
+export * from './authService';

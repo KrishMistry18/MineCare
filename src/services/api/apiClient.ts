@@ -7,6 +7,27 @@
 
 const BASE_URL = typeof window !== 'undefined' ? (import.meta.env?.VITE_API_URL || '') : '';
 
+let currentAuthToken: string | null =
+  typeof window !== 'undefined' ? localStorage.getItem('minecare_auth_token') : null;
+
+export function setAuthToken(token: string | null): void {
+  currentAuthToken = token;
+  if (typeof window !== 'undefined') {
+    if (token) {
+      localStorage.setItem('minecare_auth_token', token);
+    } else {
+      localStorage.removeItem('minecare_auth_token');
+    }
+  }
+}
+
+export function getAuthToken(): string | null {
+  if (!currentAuthToken && typeof window !== 'undefined') {
+    currentAuthToken = localStorage.getItem('minecare_auth_token');
+  }
+  return currentAuthToken;
+}
+
 export class ApiError extends Error {
   public status: number;
   public details?: unknown;
@@ -24,9 +45,12 @@ export async function apiRequest<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${BASE_URL}${endpoint}`;
-  const headers = {
+  const token = getAuthToken();
+
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers || {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...((options.headers as Record<string, string>) || {}),
   };
 
   try {

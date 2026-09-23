@@ -79,3 +79,14 @@ INSERT INTO zone_assignments (id, worker_id, helmet_id, zone_id, assigned_at, ch
 ('ZA-015', 'WRK-015', 'MC-015', 'zone-level-3-haul-road',   NOW() - INTERVAL '3 hours', NOW() - INTERVAL '3 hours', 'DEFAULT_INITIAL', TRUE),
 ('ZA-016', 'WRK-016', 'MC-016', 'zone-portal-surface',      NOW() - INTERVAL '3 hours', NOW() - INTERVAL '3 hours', 'DEFAULT_INITIAL', TRUE)
 ON CONFLICT (id) DO NOTHING;
+
+-- 5. SEED CANONICAL USER PROFILES
+INSERT INTO profiles (id, auth_user_id, name, email, role, worker_id, active) VALUES
+('PRF-001', 'auth-admin-001', 'Admin Operator', 'admin@minecare.local', 'ADMIN', NULL, TRUE),
+('PRF-002', 'auth-sup-001', 'R. Supervisor', 'supervisor@minecare.local', 'SUPERVISOR', NULL, TRUE),
+('PRF-003', 'auth-wrk-001', 'R. Marak', 'worker.marak@minecare.local', 'WORKER', 'WRK-001', TRUE),
+('PRF-004', 'auth-wrk-002', 'S. Kujur', 'worker.kujur@minecare.local', 'WORKER', 'WRK-002', TRUE)
+ON CONFLICT (email) DO UPDATE SET
+  name = EXCLUDED.name,
+  role = EXCLUDED.role,
+  worker_id = EXCLUDED.worker_id;

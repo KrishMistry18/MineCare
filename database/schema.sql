@@ -107,6 +107,36 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 
 -- ====================================================================
+-- 7. USER PROFILES TABLE (Linked to Supabase Auth auth.users)
+-- ====================================================================
+CREATE TABLE IF NOT EXISTS profiles (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    auth_user_id TEXT UNIQUE,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    role TEXT NOT NULL DEFAULT 'WORKER' CHECK (role IN ('ADMIN', 'SUPERVISOR', 'WORKER')),
+    worker_id TEXT REFERENCES workers(id) ON DELETE SET NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ====================================================================
+-- 8. AUDIT LOGS TABLE
+-- ====================================================================
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id TEXT NOT NULL,
+    user_email TEXT NOT NULL,
+    role TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    details JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ====================================================================
 -- PERFORMANCE INDEXES
 -- ====================================================================
 CREATE INDEX IF NOT EXISTS idx_telemetry_helmet_time ON telemetry (helmet_id, timestamp DESC);
@@ -114,9 +144,12 @@ CREATE INDEX IF NOT EXISTS idx_zone_assignments_active ON zone_assignments (work
 CREATE INDEX IF NOT EXISTS idx_zone_assignments_zone ON zone_assignments (zone_id, active);
 CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (status) WHERE status != 'RESOLVED';
 CREATE INDEX IF NOT EXISTS idx_helmets_worker ON helmets (worker_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_role ON profiles (role);
+CREATE INDEX IF NOT EXISTS idx_profiles_worker ON profiles (worker_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs (action, created_at DESC);
 
 -- ====================================================================
--- ROW LEVEL SECURITY (RLS) POLICIES
+-- ROW LEVEL SECURITY (RLS) POLICIES — LEAST-PRIVILEGE MODEL
 -- ====================================================================
 ALTER TABLE mine_zones ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workers ENABLE ROW LEVEL SECURITY;
@@ -124,18 +157,53 @@ ALTER TABLE helmets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE zone_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE telemetry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 
--- Read policies: allow anon/authenticated to view data
+-- Helper functions for RLS
+CREATE OR REPLACE FUNCTION auth.current_profile_role()
+RETURNS TEXT AS $$
+    SELECT role FROM profiles WHERE auth_user_id = auth.uid()::text LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION auth.current_worker_id()
+RETURNS TEXT AS $$
+    SELECT worker_id FROM profiles WHERE auth_user_id = auth.uid()::text LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+-- Public / Authenticated read zones
 CREATE POLICY "Public read mine_zones" ON mine_zones FOR SELECT USING (true);
-CREATE POLICY "Public read workers" ON workers FOR SELECT USING (true);
-CREATE POLICY "Public read helmets" ON helmets FOR SELECT USING (true);
-CREATE POLICY "Public read zone_assignments" ON zone_assignments FOR SELECT USING (true);
-CREATE POLICY "Public read telemetry" ON telemetry FOR SELECT USING (true);
-CREATE POLICY "Public read alerts" ON alerts FOR SELECT USING (true);
 
--- Insert/Update policies for operational ingestion and supervisor changes
+-- Profiles policies
+CREATE POLICY "Admins full access to profiles" ON profiles FOR ALL USING (auth.current_profile_role() = 'ADMIN');
+CREATE POLICY "Users read own profile" ON profiles FOR SELECT USING (auth.uid()::text = auth_user_id);
+CREATE POLICY "Supervisors read profiles" ON profiles FOR SELECT USING (auth.current_profile_role() = 'SUPERVISOR');
+
+-- Workers policies
+CREATE POLICY "Admins and Supervisors read workers" ON workers FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read own worker record" ON workers FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND id = auth.current_worker_id());
+CREATE POLICY "Admins write workers" ON workers FOR ALL USING (auth.current_profile_role() = 'ADMIN');
+
+-- Helmets policies
+CREATE POLICY "Admins and Supervisors read helmets" ON helmets FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read assigned helmet" ON helmets FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
+CREATE POLICY "Admins manage helmets" ON helmets FOR ALL USING (auth.current_profile_role() = 'ADMIN');
+
+-- Zone assignments policies
+CREATE POLICY "Admins and Supervisors read zone assignments" ON zone_assignments FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read own zone assignments" ON zone_assignments FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
+CREATE POLICY "Supervisors and Admins manage zone assignments" ON zone_assignments FOR ALL USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers self check-in" ON zone_assignments FOR INSERT WITH CHECK (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
+
+-- Telemetry policies
+CREATE POLICY "Admins and Supervisors read telemetry" ON telemetry FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read assigned helmet telemetry" ON telemetry FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND helmet_id IN (SELECT id FROM helmets WHERE worker_id = auth.current_worker_id()));
 CREATE POLICY "Service write telemetry" ON telemetry FOR INSERT WITH CHECK (true);
-CREATE POLICY "Service write alerts" ON alerts FOR ALL USING (true);
-CREATE POLICY "Service write zone_assignments" ON zone_assignments FOR ALL USING (true);
-CREATE POLICY "Service update helmets" ON helmets FOR UPDATE USING (true);
-CREATE POLICY "Service update workers" ON workers FOR UPDATE USING (true);
+
+-- Alerts policies
+CREATE POLICY "Admins and Supervisors manage alerts" ON alerts FOR ALL USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read own alerts" ON alerts FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
+
+-- Audit logs policies
+CREATE POLICY "Admins read audit logs" ON audit_logs FOR SELECT USING (auth.current_profile_role() = 'ADMIN');
+CREATE POLICY "Authenticated insert audit logs" ON audit_logs FOR INSERT WITH CHECK (true);

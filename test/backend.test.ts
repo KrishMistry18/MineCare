@@ -364,6 +364,8 @@ async function runTests() {
   // =========================================================================
   console.log('\n--- 7. VERSIONED REST API (18 ENDPOINTS) ---');
   const app = BackendApp.getInstance();
+  const authRes = await app.getAuthManager().login('supervisor@minecare.local', 'Supervisor#2026!');
+  const testAuthToken = 'session' in authRes ? authRes.session.token : '';
 
   async function mockRequest(pathname: string, method: string = 'GET', bodyData?: unknown): Promise<{ status: number; body: any }> {
     return new Promise((resolve) => {
@@ -371,7 +373,11 @@ async function runTests() {
       const req = new IncomingMessage(socket);
       req.url = pathname;
       req.method = method;
-      req.headers = { host: 'localhost:5173', 'content-type': 'application/json' };
+      req.headers = {
+        host: 'localhost:5173',
+        'content-type': 'application/json',
+        authorization: `Bearer ${testAuthToken}`,
+      };
 
       const res = new ServerResponse(req);
       let responseBody = '';
