@@ -9,7 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "server": "tsx server/index.ts",
-    "test": "tsx test/backend.test.ts && tsx test/auth_rbac.test.ts && tsx test/phase4_realtime.test.ts && tsx test/phase5_analytics.test.ts"
+    "test": "tsx test/backend.test.ts && tsx test/auth_rbac.test.ts && tsx test/phase4_realtime.test.ts && tsx test/phase5_analytics.test.ts && tsx test/phase6_simulation_hardening.test.ts"
 
   },
   "dependencies": {

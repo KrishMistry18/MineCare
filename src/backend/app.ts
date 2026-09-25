@@ -802,6 +802,22 @@ export class BackendApp {
         const status = url.searchParams.get('status') || undefined;
         const severity = url.searchParams.get('severity') || undefined;
         const helmetId = url.searchParams.get('helmetId') || undefined;
+        const workerId = url.searchParams.get('workerId') || undefined;
+
+        if (currentUser.role === 'WORKER') {
+          if (workerId && workerId !== currentUser.worker_id) {
+            this.sendJson(res, 403, { error: 'Forbidden: Workers cannot inspect other workers alerts' });
+            return true;
+          }
+          if (helmetId) {
+            const h = this.db.getHelmet(helmetId);
+            if (h && h.worker_id && h.worker_id !== currentUser.worker_id) {
+              this.sendJson(res, 403, { error: 'Forbidden: Workers cannot inspect other helmets alerts' });
+              return true;
+            }
+          }
+        }
+
         let alerts = this.db.getAlerts({ status, severity, helmetId });
 
         if (currentUser.role === 'WORKER') {
@@ -883,7 +899,12 @@ export class BackendApp {
 
         const alertId = alertResolveMatch[1];
         const body = await this.readJsonBody(req);
-        const notes = typeof body.notes === 'string' ? body.notes : `Resolved by ${currentUser.name}`;
+        const notes =
+          typeof body.notes === 'string'
+            ? body.notes
+            : typeof body.supervisorNotes === 'string'
+            ? body.supervisorNotes
+            : `Resolved by ${currentUser.name}`;
 
         const alert = AlertEngine.resolve(
           this.db.getAlertsStore(),

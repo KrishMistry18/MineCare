@@ -537,12 +537,64 @@ npm run preview
 | **System Health Diagnostics**| `COMPLETE` | Operational indicators, stream latency, ESP8266 pinout specification |
 | **Mock Telemetry Engine** | `COMPLETE` | 16 independent streaming helmets (~2.0s updates) with stochastic jitter |
 | **Scenario Simulator** | `COMPLETE` | 8 operational & emergency test scenarios |
-| **Physical ESP8266 Stream** | `PLANNED` | Software decoupled; hardware integration in Phase 2 |
-| **Cloud Telemetry Backend** | `PLANNED` | Architecture ready for Phase 3 ingestion service |
+---
+
+## 20. End-to-End Safety Simulation & System Hardening (Phase 6)
+
+### Canonical Safety Scenarios
+
+The MineCare software platform is thoroughly validated end-to-end across 9 canonical safety and operational scenarios:
+
+| # | Scenario | Trigger Condition | Status | Expected Behavior | Actuator Outputs |
+|---|---|---|---|---|---|
+| **1** | **Normal / Safe** | Nominal ambient (24–32°C, 50–70% hum, 150–350 raw gas, ~9.8 m/s² accel) | `SAFE` | Green indicator; nominal baseline; helmet ONLINE | Green LED: ON, Red LED: OFF, Buzzer: OFF |
+| **2** | **High Temperature** | Ambient temperature > 40.0°C | `WARNING` | Heat-related alert (`HEAT_STRESS`); helmet status WARNING; realtime broadcast; persisted in analytics | Green LED: OFF, Red LED: ON, Buzzer: OFF |
+| **3** | **High Gas** | Raw MQ-2 analog reading > 800 ADC (0–1023) | `WARNING` | Gas hazard alert (`GAS_HAZARD`); raw ADC value preserved (not ppm); realtime broadcast | Green LED: OFF, Red LED: ON, Buzzer: OFF |
+| **4** | **Worker Fall** | Resultant acceleration > 15.0 m/s² | `DANGER` | Fall alert (`WORKER_FALL`); red indicator; audible alarm activated; realtime broadcast | Green LED: OFF, Red LED: ON, Buzzer: ON |
+| **5** | **Worker SOS** | Emergency push-button pressed (`sosPressed = true`) | `DANGER` | SOS emergency alert (`SOS_EMERGENCY`); immediate critical priority; audible alarm activated | Green LED: OFF, Red LED: ON, Buzzer: ON |
+| **6** | **Multiple Alerts** | Simultaneous compound hazards (e.g. Gas > 800 + Temp > 40°C + SOS) | `DANGER` | **DANGER takes strict precedence over WARNING**; compound alert details preserved | Green LED: OFF, Red LED: ON, Buzzer: ON |
+| **7** | **Recovery** | Sensor values return to safe baseline | `SAFE` | Safety status restores to `SAFE`; environmental hazard alerts auto-resolve; **historical alerts preserved** | Green LED: ON, Red LED: OFF, Buzzer: OFF |
+| **8** | **Offline Timeout** | Heartbeat delayed > 8 seconds | `OFFLINE` | State transitions `ONLINE` ➔ `STALE` (4s) ➔ `OFFLINE` (8s); `HELMET_OFFLINE` alert triggered | N/A (Link lost) |
+| **9** | **Reconnect** | Telemetry packet stream resumes | `ONLINE` | Helmet restored to `ONLINE`; `HELMET_OFFLINE` alert auto-resolved without duplicate records | Green LED: ON, Red LED: OFF, Buzzer: OFF |
+
+### Prototype Safety Thresholds & Priority
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                   AUTHORITATIVE SAFETY PRIORITY MATRIX                 │
+│                                                                        │
+│                 DANGER  >  WARNING  >  SAFE                            │
+│                                                                        │
+│  • DANGER CONDITIONS  : SOS Push-Button OR Fall Accel > 15.0 m/s²      │
+│  • WARNING CONDITIONS : Gas Raw ADC > 800  OR Temperature > 40.0°C     │
+│  • SAFE CONDITIONS    : All parameters within prototype nominal range   │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+> [!IMPORTANT]
+> **Prototype Threshold Notice & Disclaimer**:
+> 1. The gas reading from the MQ-2 sensor is strictly a **raw analog ADC value (0–1023)** from the ESP8266 `A0` pin. It is **NOT converted to ppm** and does **NOT represent certified methane concentration**.
+> 2. The safety thresholds (>40°C, >800 raw ADC, >15.0 m/s²) are **prototype thresholds** calibrated for software testing and validation.
+> 3. MineCare is currently an experimental research and software prototype; it is **NOT a certified underground mining life-safety system**.
+
+### Hardware Boundary
+
+Physical hardware integration remains **NOT IMPLEMENTED**:
+- NodeMCU ESP8266, DHT22, MQ-2, MPU6050, SOS push button, status LEDs, and piezo buzzer remain simulated in software via `MockTelemetryProvider`.
+- No GPS coordinates or continuous positioning are used (strict zone-based tracking maintained).
+
+### End-to-End Test Suite Execution
+
+Execute the complete 5-suite verification matrix (378 automated checks):
+
+```bash
+# Run all phase verification suites
+npm test
+```
 
 ---
 
-## 20. Author & Credits
+## 21. Author & Credits
 
 **MineCare — Smart Mine Safety Helmet Platform**
 

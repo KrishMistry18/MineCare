@@ -369,7 +369,6 @@ export class DatabaseRepository {
 
     // Update helmet status and last_seen
     const helmet = this.helmets.get(telemetry.helmet_id);
-    const wasOffline = helmet ? !helmet.online : false;
     if (helmet) {
       helmet.status = telemetry.safety_status;
       helmet.last_seen = telemetry.timestamp;
@@ -378,17 +377,15 @@ export class DatabaseRepository {
     }
 
     // Auto-resolve any active HELMET_OFFLINE alerts when telemetry resumes
-    if (wasOffline) {
-      const now = new Date().toISOString();
-      this.alertsStore.forEach((a) => {
-        if (a.helmet_id === telemetry.helmet_id && a.type === 'HELMET_OFFLINE' && a.status !== 'RESOLVED') {
-          a.status = 'RESOLVED';
-          a.resolved_at = now;
-          a.supervisor_notes = 'Auto-resolved: Heartbeat packet stream re-established.';
-          a.updated_at = now;
-        }
-      });
-    }
+    const now = new Date().toISOString();
+    this.alertsStore.forEach((a) => {
+      if (a.helmet_id === telemetry.helmet_id && a.type === 'HELMET_OFFLINE' && a.status !== 'RESOLVED') {
+        a.status = 'RESOLVED';
+        a.resolved_at = now;
+        a.supervisor_notes = 'Auto-resolved: Heartbeat packet stream re-established.';
+        a.updated_at = now;
+      }
+    });
   }
 
   public getLatestTelemetry(helmetId: string): DbTelemetry | undefined {

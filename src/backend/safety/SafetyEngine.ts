@@ -45,22 +45,36 @@ export class SafetyEngine {
   }): SafetyEvaluation {
     const details: string[] = [];
 
-    // 1. DANGER (Highest Priority)
+    // Evaluate individual hazard conditions
     const isFall = packet.totalAcceleration > PROTOTYPE_LIMITS.FALL_ACCELERATION;
     const isSos = Boolean(packet.sosPressed);
+    const isHighGas = packet.gasValue > PROTOTYPE_LIMITS.HIGH_GAS_RAW;
+    const isHighTemp = packet.temperature > PROTOTYPE_LIMITS.HIGH_TEMPERATURE;
 
+    if (isSos) {
+      details.push('SOS Push-Button Emergency Activated by Worker');
+    }
+    if (isFall) {
+      details.push(`Impact Fall Detected (${packet.totalAcceleration.toFixed(1)} m/s² > ${PROTOTYPE_LIMITS.FALL_ACCELERATION} m/s²)`);
+    }
+    if (isHighGas) {
+      details.push(`Elevated Raw Gas Reading (${packet.gasValue} > ${PROTOTYPE_LIMITS.HIGH_GAS_RAW} ADC)`);
+    }
+    if (isHighTemp) {
+      details.push(`Elevated Ambient Temperature (${packet.temperature.toFixed(1)}°C > ${PROTOTYPE_LIMITS.HIGH_TEMPERATURE}°C)`);
+    }
+
+    const hazardCount = (isSos ? 1 : 0) + (isFall ? 1 : 0) + (isHighGas ? 1 : 0) + (isHighTemp ? 1 : 0);
+
+    // 1. DANGER (Highest Priority: SOS or Fall)
     if (isSos || isFall) {
       let primaryTrigger: HazardTrigger = 'NOMINAL';
-      if (isSos && isFall) {
+      if (hazardCount > 1) {
         primaryTrigger = 'MULTIPLE_HAZARDS';
-        details.push('SOS Push-Button Emergency Triggered');
-        details.push(`Impact Fall Detected (${packet.totalAcceleration.toFixed(1)} m/s² > ${PROTOTYPE_LIMITS.FALL_ACCELERATION} m/s²)`);
       } else if (isSos) {
         primaryTrigger = 'SOS_BUTTON_TRIGGERED';
-        details.push('SOS Push-Button Emergency Activated by Worker');
       } else {
         primaryTrigger = 'FALL_IMPACT_DETECTED';
-        details.push(`Impact Fall Threshold Exceeded (${packet.totalAcceleration.toFixed(1)} m/s² > ${PROTOTYPE_LIMITS.FALL_ACCELERATION} m/s²)`);
       }
 
       return {
@@ -72,22 +86,15 @@ export class SafetyEngine {
       };
     }
 
-    // 2. WARNING (Medium Priority)
-    const isHighGas = packet.gasValue > PROTOTYPE_LIMITS.HIGH_GAS_RAW;
-    const isHighTemp = packet.temperature > PROTOTYPE_LIMITS.HIGH_TEMPERATURE;
-
+    // 2. WARNING (Medium Priority: Gas or Temperature)
     if (isHighGas || isHighTemp) {
       let primaryTrigger: HazardTrigger = 'NOMINAL';
-      if (isHighGas && isHighTemp) {
+      if (hazardCount > 1) {
         primaryTrigger = 'MULTIPLE_HAZARDS';
-        details.push(`Elevated Raw Gas Reading (${packet.gasValue} > ${PROTOTYPE_LIMITS.HIGH_GAS_RAW} ADC)`);
-        details.push(`Elevated Ambient Temperature (${packet.temperature.toFixed(1)}°C > ${PROTOTYPE_LIMITS.HIGH_TEMPERATURE}°C)`);
       } else if (isHighGas) {
         primaryTrigger = 'HIGH_RAW_GAS_LEVEL';
-        details.push(`Elevated Raw Gas Reading (${packet.gasValue} > ${PROTOTYPE_LIMITS.HIGH_GAS_RAW} ADC)`);
       } else {
         primaryTrigger = 'HIGH_TEMPERATURE';
-        details.push(`Elevated Ambient Temperature (${packet.temperature.toFixed(1)}°C > ${PROTOTYPE_LIMITS.HIGH_TEMPERATURE}°C)`);
       }
 
       return {
