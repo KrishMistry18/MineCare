@@ -5,7 +5,10 @@
  * Provides resilient fallbacks and structured error handling.
  */
 
-const BASE_URL = typeof window !== 'undefined' ? (import.meta.env?.VITE_API_URL || '') : '';
+const BASE_URL =
+  typeof window !== 'undefined' && import.meta.env?.VITE_API_URL
+    ? String(import.meta.env.VITE_API_URL).trim().replace(/\/+$/, '')
+    : '';
 
 let currentAuthToken: string | null =
   typeof window !== 'undefined' ? localStorage.getItem('minecare_auth_token') : null;

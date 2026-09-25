@@ -38,6 +38,7 @@ export class RealtimePublisher {
   private static instance: RealtimePublisher | null = null;
   private listeners: Set<RealtimeListener> = new Set();
   private sseClients: Map<string, SseClient> = new Map();
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   private constructor() {}
 
@@ -53,6 +54,10 @@ export class RealtimePublisher {
    */
   public static resetInstance(): void {
     if (RealtimePublisher.instance) {
+      if (RealtimePublisher.instance.heartbeatTimer) {
+        clearInterval(RealtimePublisher.instance.heartbeatTimer);
+        RealtimePublisher.instance.heartbeatTimer = null;
+      }
       RealtimePublisher.instance.listeners.clear();
       RealtimePublisher.instance.sseClients.clear();
       RealtimePublisher.instance = null;
@@ -75,8 +80,12 @@ export class RealtimePublisher {
   public addSseClient(client: SseClient): void {
     this.sseClients.set(client.id, client);
     client.res.on('close', () => {
-      this.sseClients.delete(client.id);
+      this.removeSseClient(client.id);
     });
+
+    if (!this.heartbeatTimer) {
+      this.startHeartbeat();
+    }
   }
 
   /**
@@ -84,6 +93,39 @@ export class RealtimePublisher {
    */
   public removeSseClient(clientId: string): void {
     this.sseClients.delete(clientId);
+    if (this.sseClients.size === 0 && this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.heartbeatTimer = setInterval(() => {
+      this.sendHeartbeat();
+    }, 25000);
+
+    if (typeof this.heartbeatTimer.unref === 'function') {
+      this.heartbeatTimer.unref();
+    }
+  }
+
+  private sendHeartbeat(): void {
+    if (this.sseClients.size === 0) {
+      if (this.heartbeatTimer) {
+        clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = null;
+      }
+      return;
+    }
+
+    const comment = `: heartbeat ${Date.now()}\n\n`;
+    this.sseClients.forEach((client) => {
+      try {
+        client.res.write(comment);
+      } catch {
+        this.sseClients.delete(client.id);
+      }
+    });
   }
 
   public getConnectedClientsCount(): number {

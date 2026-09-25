@@ -594,7 +594,30 @@ npm test
 
 ---
 
-## 21. Author & Credits
+## 21. Cloud Deployment & Operating Boundaries
+
+MineCare is configured for cloud prototype and demo deployment across a modern decoupled architecture:
+- **Frontend**: React + TypeScript + Vite deployed to **Vercel** (`https://<project>.vercel.app`).
+- **Backend API**: Node.js standalone HTTP server deployed to **Render Web Service** (`https://<project>.onrender.com`).
+- **Realtime**: Dual-channel architecture supporting **Supabase Realtime** (`postgres_changes` via WebSockets) with automatic fallback to **Server-Sent Events (SSE)** via `GET /api/v1/realtime/stream` on the Render backend (featuring a 25-second keep-alive heartbeat).
+
+### Database Deployment Boundary
+
+> [!IMPORTANT]
+> **Current deployment uses the in-memory relational repository. Supabase migrations are prepared for future persistent deployment but are not currently the runtime database.**
+>
+> All operational tables (`mine_zones`, `workers`, `helmets`, `zone_assignments`, `telemetry`, `alerts`, `profiles`, `audit_logs`) operate authoritatively in-process within `DatabaseRepository`. Complete PostgreSQL schemas with Row-Level Security (RLS) policies are provided in `supabase/migrations/` for subsequent database migration phases.
+
+### Authentication Deployment Boundary
+
+> [!WARNING]
+> **Authentication is suitable for controlled prototype/demo deployment; production external-user deployment requires password hashing or Supabase Auth; never expose this as production-grade authentication.**
+>
+> The prototype login endpoint generates 24-hour in-memory session tokens with role validation (`ADMIN`, `SUPERVISOR`, `WORKER`). For a multi-tenant public deployment, passwords must be hashed using a standard cryptographic algorithm (e.g. bcrypt/Argon2) or delegated to Supabase Auth.
+
+---
+
+## 22. Author & Credits
 
 **MineCare — Smart Mine Safety Helmet Platform**
 
@@ -604,7 +627,7 @@ npm test
 
 ---
 
-## 21. License
+## 23. License
 
 This project is developed for academic, experimental, and safety engineering research. All software and hardware designs are provided for evaluation purposes.
 

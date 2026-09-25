@@ -250,7 +250,11 @@ export class SupabaseRealtimeService {
     // 1. In browser environment with window: Use EventSource
     if (typeof window !== 'undefined' && typeof EventSource !== 'undefined') {
       const token = getAuthToken() || '';
-      const sseUrl = `/api/v1/realtime/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const baseUrl =
+        typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL
+          ? String(import.meta.env.VITE_API_URL).trim().replace(/\/+$/, '')
+          : '';
+      const sseUrl = `${baseUrl}/api/v1/realtime/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`;
 
       try {
         if (this.eventSource) {

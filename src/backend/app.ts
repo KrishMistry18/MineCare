@@ -84,8 +84,25 @@ export class BackendApp {
     const pathname = url.pathname;
     const method = req.method?.toUpperCase() || 'GET';
 
-    // CORS Headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS Configuration (Production Environment & Local Dev Fallback)
+    const configuredOrigin = typeof process !== 'undefined' ? process.env?.CORS_ORIGIN?.trim() : undefined;
+    const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : undefined;
+
+    let allowedOrigin = '*';
+    if (configuredOrigin) {
+      const allowedOrigins = configuredOrigin.split(',').map((o) => o.trim());
+      if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+        allowedOrigin = requestOrigin;
+      } else {
+        allowedOrigin = allowedOrigins[0];
+      }
+      res.setHeader('Vary', 'Origin');
+    } else {
+      // Safe local development fallback
+      allowedOrigin = requestOrigin || '*';
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 

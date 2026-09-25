@@ -8,9 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "start": "tsx server/index.ts",
     "server": "tsx server/index.ts",
     "test": "tsx test/backend.test.ts && tsx test/auth_rbac.test.ts && tsx test/phase4_realtime.test.ts && tsx test/phase5_analytics.test.ts && tsx test/phase6_simulation_hardening.test.ts"
-
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.1",
@@ -19,7 +19,8 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "recharts": "^3.10.1",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.0",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
@@ -32,7 +33,6 @@
     "oxlint": "^1.81.0",
     "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
-    "tsx": "^4.23.15",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
   }

@@ -8,6 +8,7 @@ import { createServer } from 'http';
 import { BackendApp } from '../src/backend/app';
 
 const port = Number(process.env.PORT || 3001);
+const host = process.env.HOST || '0.0.0.0';
 const app = BackendApp.getInstance();
 
 const server = createServer(async (req, res) => {
@@ -19,7 +20,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`[MineCare Backend] Server running on http://localhost:${port}`);
-  console.log(`[MineCare Backend] API Endpoints available at http://localhost:${port}/api/v1/`);
+server.listen(port, host, () => {
+  console.log(`[MineCare Backend] Server running on http://${host}:${port}`);
+  console.log(`[MineCare Backend] API Endpoints available at http://${host}:${port}/api/v1/`);
 });
