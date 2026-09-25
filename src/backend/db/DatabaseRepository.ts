@@ -254,8 +254,32 @@ export class DatabaseRepository {
     });
   }
 
+  public getRawHelmets(): DbHelmet[] {
+    return Array.from(this.helmets.values());
+  }
+
   public getHelmet(helmetId: string): DbHelmet | undefined {
     return this.helmets.get(helmetId);
+  }
+
+  public getHelmetWithDetails(
+    helmetId: string
+  ): (DbHelmet & { assigned_zone_name?: string; current_work_zone_name?: string | null; worker_name?: string | null }) | undefined {
+    const helmet = this.helmets.get(helmetId);
+    if (!helmet) return undefined;
+    const worker = helmet.worker_id ? this.workers.get(helmet.worker_id) : undefined;
+    const defaultZone = worker?.assigned_zone_id ? this.zones.get(worker.assigned_zone_id) : undefined;
+    const activeAssignment = helmet.worker_id
+      ? this.zoneAssignments.find((a) => a.worker_id === helmet.worker_id && a.active)
+      : undefined;
+    const currentZone = activeAssignment ? this.zones.get(activeAssignment.zone_id) : undefined;
+
+    return {
+      ...helmet,
+      worker_name: worker?.name || null,
+      assigned_zone_name: defaultZone?.name || 'Portal / Surface',
+      current_work_zone_name: currentZone?.name || null,
+    };
   }
 
   public updateHelmet(helmetId: string, updates: Partial<DbHelmet>): DbHelmet | undefined {
@@ -345,11 +369,25 @@ export class DatabaseRepository {
 
     // Update helmet status and last_seen
     const helmet = this.helmets.get(telemetry.helmet_id);
+    const wasOffline = helmet ? !helmet.online : false;
     if (helmet) {
       helmet.status = telemetry.safety_status;
       helmet.last_seen = telemetry.timestamp;
       helmet.online = true;
       helmet.updated_at = new Date().toISOString();
+    }
+
+    // Auto-resolve any active HELMET_OFFLINE alerts when telemetry resumes
+    if (wasOffline) {
+      const now = new Date().toISOString();
+      this.alertsStore.forEach((a) => {
+        if (a.helmet_id === telemetry.helmet_id && a.type === 'HELMET_OFFLINE' && a.status !== 'RESOLVED') {
+          a.status = 'RESOLVED';
+          a.resolved_at = now;
+          a.supervisor_notes = 'Auto-resolved: Heartbeat packet stream re-established.';
+          a.updated_at = now;
+        }
+      });
     }
   }
 

@@ -94,15 +94,29 @@ export class AuthManager {
    * Extract and validate user profile from Authorization Bearer header
    */
   public authenticateRequest(req: IncomingMessage): DbUserProfile | null {
+    let token: string | null = null;
     const authHeader = req.headers.authorization;
-    if (!authHeader) return null;
-
-    const parts = authHeader.split(' ');
-    if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
-      return null;
+    if (authHeader) {
+      const parts = authHeader.split(' ');
+      if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
+        token = parts[1];
+      }
     }
 
-    const token = parts[1];
+    if (!token && req.url) {
+      try {
+        const parsedUrl = new URL(req.url, 'http://localhost');
+        const queryToken = parsedUrl.searchParams.get('token');
+        if (queryToken) {
+          token = queryToken;
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+
+    if (!token) return null;
+
     const session = this.db.getSession(token);
     if (!session) return null;
 

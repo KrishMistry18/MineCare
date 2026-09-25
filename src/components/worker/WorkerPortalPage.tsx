@@ -63,7 +63,7 @@ export const WorkerPortalPage: React.FC = () => {
     } catch (err) {
       console.error('Failed to load worker profile:', err);
     }
-  }, [user?.worker_id, zones]);
+  }, [user, zones]);
 
   useEffect(() => {
     async function init() {
@@ -74,12 +74,14 @@ export const WorkerPortalPage: React.FC = () => {
         console.error('Failed to load zones:', err);
       }
     }
-    init();
+    void init();
   }, []);
 
   useEffect(() => {
-    loadWorkerProfile();
+    void loadWorkerProfile();
   }, [loadWorkerProfile]);
+
+
 
   const handleCheckIn = async () => {
     if (!user?.worker_id) return;
@@ -113,7 +115,8 @@ export const WorkerPortalPage: React.FC = () => {
     }
   };
 
-  const isCheckedIn = Boolean(workerData?.current_work_zone_name);
+  const currentWorkZoneName = myHelmet?.currentWorkZone || workerData?.current_work_zone_name;
+  const isCheckedIn = Boolean(currentWorkZoneName && currentWorkZoneName !== 'Checked Out');
 
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 p-4 md:p-8 font-sans selection:bg-cyan-500/20 selection:text-cyan-200">
@@ -299,7 +302,7 @@ export const WorkerPortalPage: React.FC = () => {
               {isCheckedIn ? (
                 <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/50 flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                  Checked in to {workerData?.current_work_zone_name}
+                  Checked in to {currentWorkZoneName}
                 </span>
               ) : (
                 <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">

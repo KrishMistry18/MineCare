@@ -2,7 +2,15 @@
  * MineCare - Mock Telemetry Provider
  * 
  * Drives 16 simulated helmets streaming telemetry every 2 seconds.
- * Matching Lovable reference behavior exactly.
+ * Implements deterministic & stateful multi-step scenarios:
+ * 1. NORMAL: 24–32°C, 50–70% hum, 150–350 raw gas, ~9–11 m/s² accel, status SAFE
+ * 2. HIGH TEMPERATURE: 32 -> 35 -> 38 -> 41 -> 43 (°C) -> Warning > 40°C
+ * 3. HIGH GAS: 300 -> 450 -> 620 -> 790 -> 850 -> 910 (raw) -> Warning > 800
+ * 4. FALL: 9.8 -> 10.1 -> 22.4 -> 18.1 -> 9.7 (m/s²) -> Danger > 15.0 m/s²
+ * 5. SOS: sosPressed = true -> Danger
+ * 6. MULTIPLE ALERTS: compound gas > 800, temp > 40°C, SOS = true -> Danger
+ * 7. RECOVERY: Gas 910->650->400->250, Temp 43->38->31 -> returns SAFE
+ * 8. OFFLINE: Stops sending packets -> backend detects STALE then OFFLINE
  */
 
 import type { ITelemetryProvider, TelemetryCallback, Unsubscribe } from './ITelemetryProvider';
@@ -11,6 +19,9 @@ import { SafetyEvaluator } from './SafetyEvaluator';
 import { INITIAL_WORKERS } from '../../data/mockData';
 import { telemetryApiService } from '../api/telemetryService';
 import { DatabaseRepository } from '../../backend/db/DatabaseRepository';
+import { SafetyEngine } from '../../backend/safety/SafetyEngine';
+import { AlertEngine } from '../../backend/alerts/AlertEngine';
+import { RealtimePublisher } from '../../backend/realtime/RealtimePublisher';
 
 interface HelmetSimState {
   helmetId: string;
@@ -51,14 +62,13 @@ export class MockTelemetryProvider implements ITelemetryProvider {
   }
 
   private initializeFleet(): void {
-    // 16 Baselines matching Lovable reference screenshots
     const baselines: Record<string, { temp: number; hum: number; gas: number; accel: number; batt: number }> = {
-      'MC-001': { temp: 24.3, hum: 57, gas: 193, accel: 10.0, batt: 68 },
+      'MC-001': { temp: 25.5, hum: 57, gas: 210, accel: 9.8, batt: 68 },
       'MC-002': { temp: 27.8, hum: 53, gas: 227, accel: 9.6, batt: 69 },
       'MC-003': { temp: 29.1, hum: 57, gas: 207, accel: 9.7, batt: 70 },
       'MC-004': { temp: 28.1, hum: 62, gas: 221, accel: 10.2, batt: 71 },
-      'MC-005': { temp: 31.8, hum: 58, gas: 274, accel: 9.7, batt: 71 },
-      'MC-006': { temp: 30.9, hum: 61, gas: 251, accel: 10.3, batt: 72 },
+      'MC-005': { temp: 31.2, hum: 58, gas: 274, accel: 9.7, batt: 71 },
+      'MC-006': { temp: 30.5, hum: 61, gas: 251, accel: 10.3, batt: 72 },
       'MC-007': { temp: 24.2, hum: 62, gas: 188, accel: 9.9, batt: 67 },
       'MC-008': { temp: 27.8, hum: 59, gas: 232, accel: 10.1, batt: 68 },
       'MC-009': { temp: 28.6, hum: 64, gas: 219, accel: 9.8, batt: 69 },
@@ -154,97 +164,188 @@ export class MockTelemetryProvider implements ITelemetryProvider {
 
       switch (scenario) {
         case 'SAFE':
-        case 'RECOVERY':
           state.sosPressed = false;
           state.fallDetected = false;
           state.isHelmetOffline = false;
           state.dht22Healthy = true;
           state.mq2Healthy = true;
           state.mpu6050Healthy = true;
-          state.temperature = 25.5 + (Math.random() * 2 - 1);
-          state.humidity = 58 + (Math.random() * 4 - 2);
-          state.rawGas = 205 + Math.floor(Math.random() * 25);
+          state.temperature = 26.5;
+          state.humidity = 58;
+          state.rawGas = 220;
           state.accelX = 0.1;
           state.accelY = 0.2;
           state.accelZ = 9.81;
           break;
 
         case 'HIGH_TEMPERATURE':
-          state.temperature = 43.2; // Exceeds 40°C prototype threshold
+          state.isHelmetOffline = false;
+          state.temperature = 32.0; // Starts ramp: 32 -> 35 -> 38 -> 41 -> 43
+          state.sosPressed = false;
+          state.fallDetected = false;
           break;
 
         case 'HIGH_GAS':
-          state.rawGas = 875; // Exceeds 800 raw ADC threshold
+          state.isHelmetOffline = false;
+          state.rawGas = 300; // Starts ramp: 300 -> 450 -> 620 -> 790 -> 850 -> 910
+          state.sosPressed = false;
+          state.fallDetected = false;
           break;
 
         case 'FALL_DETECTED':
-          state.accelX = 8.5;
-          state.accelY = 9.2;
-          state.accelZ = 12.8;
-          state.fallDetected = true;
+          state.isHelmetOffline = false;
+          state.sosPressed = false;
+          // Step 0 of fall spike: 9.8 -> 10.1 -> 22.4 -> 18.1 -> 9.7
+          state.accelX = 0.1;
+          state.accelY = 0.2;
+          state.accelZ = 9.8;
+          state.fallDetected = false;
           break;
 
         case 'SOS_ACTIVATED':
+          state.isHelmetOffline = false;
           state.sosPressed = true;
           break;
 
         case 'MULTIPLE_ALERTS':
-          state.rawGas = 915;
-          state.sosPressed = true;
-          state.temperature = 42.1;
+          state.isHelmetOffline = false;
+          state.rawGas = 915; // > 800
+          state.temperature = 42.5; // > 40°C
+          state.sosPressed = true; // SOS
+          state.accelZ = 9.81;
+          break;
+
+        case 'RECOVERY':
+          state.isHelmetOffline = false;
+          state.sosPressed = false;
+          state.fallDetected = false;
+          // Begins recovery descent: Gas 910 -> 650 -> 400 -> 250, Temp 43 -> 38 -> 31
+          state.rawGas = 910;
+          state.temperature = 43.0;
+          break;
+
+        case 'HELMET_OFFLINE':
+          state.isHelmetOffline = true;
           break;
 
         case 'SENSOR_OFFLINE':
           state.dht22Healthy = false;
           state.mpu6050Healthy = false;
           break;
-
-        case 'HELMET_OFFLINE':
-          state.isHelmetOffline = true;
-          break;
       }
     });
   }
 
-  private tick(): void {
+  public tick(): void {
     const nowIso = new Date().toISOString();
 
     this.activeHelmets.forEach((state) => {
+      // If offline scenario is triggered for this helmet, halt transmission
       if (state.isHelmetOffline) {
         return;
       }
 
       state.sequence++;
+      const step = state.scenarioStep;
       state.scenarioStep++;
 
-      // Subtle stochastic walk for realistic mining shaft telemetry
+      // --- Stateful Multi-Step Scenario Progression ---
+
       if (state.currentScenario === 'SAFE') {
+        // 1. NORMAL: 24–32°C, 50–70% hum, 150–350 raw gas, ~9–11 m/s² accel, status SAFE
         state.temperature += (Math.random() - 0.5) * 0.1;
-        state.temperature = Math.max(22, Math.min(34, state.temperature));
+        state.temperature = Math.max(24.0, Math.min(32.0, Number(state.temperature.toFixed(1))));
 
         state.humidity += (Math.random() - 0.5) * 0.2;
-        state.humidity = Math.max(45, Math.min(75, state.humidity));
+        state.humidity = Math.max(50.0, Math.min(70.0, Number(state.humidity.toFixed(1))));
 
         state.rawGas += Math.floor((Math.random() - 0.5) * 4);
-        state.rawGas = Math.max(160, Math.min(320, state.rawGas));
+        state.rawGas = Math.max(150, Math.min(350, state.rawGas));
 
-        state.accelX = (Math.random() - 0.5) * 0.3;
-        state.accelY = (Math.random() - 0.5) * 0.3;
-        state.accelZ = 9.81 + (Math.random() - 0.5) * 0.5;
-      } else if (state.currentScenario === 'FALL_DETECTED') {
-        if (state.scenarioStep <= 2) {
-          state.accelX = 9.5;
-          state.accelY = 8.4;
-          state.accelZ = 13.6;
-        } else {
-          state.accelX = 9.75;
-          state.accelY = 0.8;
-          state.accelZ = 0.4;
-        }
-      } else if (state.currentScenario === 'HIGH_GAS') {
-        state.rawGas = 850 + Math.floor(Math.random() * 60);
+        state.accelX = (Math.random() - 0.5) * 0.2;
+        state.accelY = (Math.random() - 0.5) * 0.2;
+        state.accelZ = 9.81 + (Math.random() - 0.5) * 0.3;
+        state.fallDetected = false;
+        state.sosPressed = false;
+
       } else if (state.currentScenario === 'HIGH_TEMPERATURE') {
-        state.temperature = 42.0 + (Math.random() * 1.5);
+        // 2. HIGH TEMPERATURE: 32 → 35 → 38 → 41 → 43 -> Warning once > 40°C
+        const tempRamp = [32.0, 35.0, 38.0, 41.0, 43.0];
+        if (step < tempRamp.length) {
+          state.temperature = tempRamp[step];
+        } else {
+          state.temperature = 43.2 + (Math.random() * 0.4 - 0.2);
+        }
+        state.temperature = Number(state.temperature.toFixed(1));
+
+      } else if (state.currentScenario === 'HIGH_GAS') {
+        // 3. HIGH GAS: 300 → 450 → 620 → 790 → 850 → 910 -> Warning once > 800
+        const gasRamp = [300, 450, 620, 790, 850, 910, 920, 930, 915];
+        if (step < gasRamp.length) {
+          state.rawGas = gasRamp[step];
+        } else {
+          state.rawGas = 915 + Math.floor(Math.random() * 15);
+        }
+
+      } else if (state.currentScenario === 'FALL_DETECTED') {
+        // 4. FALL: 9.8 → 10.1 → 22.4 → 18.1 → 9.7 -> Danger once > 15.0 m/s²
+        if (step === 0) {
+          state.accelX = 0.1;
+          state.accelY = 0.2;
+          state.accelZ = 9.8;
+          state.fallDetected = false;
+        } else if (step === 1) {
+          state.accelX = 1.2;
+          state.accelY = 0.5;
+          state.accelZ = 10.0;
+          state.fallDetected = false;
+        } else if (step === 2) {
+          // Impact spike (total = 22.4 m/s²)
+          state.accelX = 11.2;
+          state.accelY = 10.4;
+          state.accelZ = 16.2;
+          state.fallDetected = true;
+        } else if (step === 3) {
+          // Settling (total = 18.1 m/s²)
+          state.accelX = 9.0;
+          state.accelY = 8.5;
+          state.accelZ = 12.8;
+          state.fallDetected = false;
+        } else {
+          // Settled on ground (total = 9.7 m/s²)
+          state.accelX = 0.2;
+          state.accelY = 0.2;
+          state.accelZ = 9.7;
+          state.fallDetected = false;
+        }
+
+      } else if (state.currentScenario === 'SOS_ACTIVATED') {
+        // 5. SOS: sosPressed = true
+        state.sosPressed = true;
+        state.accelZ = 9.81;
+
+      } else if (state.currentScenario === 'MULTIPLE_ALERTS') {
+        // 6. MULTIPLE ALERTS: gas > 800 AND temp > 40°C AND SOS = true
+        state.rawGas = 915;
+        state.temperature = 42.5;
+        state.sosPressed = true;
+        state.accelZ = 9.81;
+
+      } else if (state.currentScenario === 'RECOVERY') {
+        // 7. RECOVERY: Gas 910 → 650 → 400 → 250, Temp 43 → 38 → 31
+        const gasRecovery = [910, 650, 400, 250];
+        const tempRecovery = [43.0, 38.0, 31.0, 26.5];
+
+        if (step < gasRecovery.length) {
+          state.rawGas = gasRecovery[step];
+          state.temperature = tempRecovery[step];
+        } else {
+          state.rawGas = 220;
+          state.temperature = 26.5;
+          state.currentScenario = 'SAFE';
+        }
+        state.sosPressed = false;
+        state.fallDetected = false;
       }
 
       const totalAccel = Math.sqrt(
@@ -253,7 +354,7 @@ export class MockTelemetryProvider implements ITelemetryProvider {
         state.accelZ * state.accelZ
       );
 
-      const isFall = totalAccel > 15.0;
+      const isFall = totalAccel > 15.0 || state.fallDetected;
 
       const safetyEval = SafetyEvaluator.evaluate({
         dht22: {
@@ -308,7 +409,7 @@ export class MockTelemetryProvider implements ITelemetryProvider {
         batteryVolts: Number(state.battery),
       };
 
-      // Ingest through versioned Telemetry API (/api/v1/telemetry)
+      // Ingest through authoritative Telemetry API (/api/v1/telemetry)
       telemetryApiService
         .sendTelemetry({
           packetId: packet.packetId,
@@ -334,7 +435,14 @@ export class MockTelemetryProvider implements ITelemetryProvider {
           // Graceful fallback for offline / test environments
           try {
             const db = DatabaseRepository.getInstance();
-            db.saveTelemetry({
+            const safety = SafetyEngine.evaluate({
+              temperature: packet.dht22.temperature,
+              gasValue: packet.mq2.rawGasValue,
+              totalAcceleration: packet.mpu6050.totalAcceleration,
+              sosPressed: packet.sosPressed,
+            });
+
+            const telemetryRecord = {
               id: packet.packetId,
               helmet_id: packet.helmetId,
               timestamp: packet.timestamp,
@@ -351,22 +459,49 @@ export class MockTelemetryProvider implements ITelemetryProvider {
               gyro_z: packet.mpu6050.gyroZ,
               fall_detected: packet.fallDetected,
               sos_pressed: packet.sosPressed,
-              safety_status: safetyEval.status,
+              safety_status: safety.status,
               created_at: new Date().toISOString(),
-            });
+            };
+
+            db.saveTelemetry(telemetryRecord);
+
+            const helmet = db.getHelmetWithDetails(packet.helmetId);
+            const alertResult = AlertEngine.processAlerts(
+              db.getAlertsStore(),
+              packet.helmetId,
+              helmet?.worker_id || null,
+              packet as any,
+              safety
+            );
+
+            // Publish authoritative changes to Realtime broker
+            const pub = RealtimePublisher.getInstance();
+            pub.publish('telemetry', 'INSERT', telemetryRecord);
+            if (helmet) pub.publish('helmets', 'UPDATE', helmet);
+            if (alertResult.createdAlert) pub.publish('alerts', 'INSERT', alertResult.createdAlert);
+            alertResult.resolvedAlerts.forEach((r) => pub.publish('alerts', 'UPDATE', r));
           } catch {
             // Ignore offline fallback error
           }
         });
 
-      this.subscribers.forEach(cb => {
-        try { cb(packet); } catch (e) { console.error('Error in telemetry subscriber', e); }
+      // Notify any local provider subscribers
+      this.subscribers.forEach((cb) => {
+        try {
+          cb(packet);
+        } catch (e) {
+          console.error('Error in telemetry subscriber', e);
+        }
       });
 
       const specificSubs = this.helmetSubscribers.get(state.helmetId);
       if (specificSubs) {
-        specificSubs.forEach(cb => {
-          try { cb(packet); } catch (e) { console.error('Error in helmet subscriber', e); }
+        specificSubs.forEach((cb) => {
+          try {
+            cb(packet);
+          } catch (e) {
+            console.error('Error in helmet subscriber', e);
+          }
         });
       }
     });

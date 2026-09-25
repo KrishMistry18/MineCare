@@ -3,7 +3,7 @@
  * Matching Lovable reference design 1:1.
  */
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { 
   HardHat, 
   ShieldCheck, 
@@ -31,20 +31,9 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
     activeDangerCount, 
     activeWarningCount, 
     resolveAlert,
-    zoneOccupancies
+    zoneOccupancies,
+    lastTelemetryTime
   } = useTelemetry();
-
-  const [lastFrameTime, setLastFrameTime] = useState<string>('');
-
-  useEffect(() => {
-    const update = () => {
-      const now = new Date();
-      setLastFrameTime(now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-    };
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   const totalHelmets = helmets.length;
   const offlineHelmets = helmets.filter(h => h.connectivity === 'OFFLINE').length;
@@ -80,8 +69,9 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
           </p>
         </div>
 
-        <div className="text-xs font-mono text-slate-400 self-start sm:self-auto">
-          Last frame {lastFrameTime}
+        <div className="text-xs font-mono text-slate-400 self-start sm:self-auto flex items-center space-x-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse" />
+          <span>Last telemetry {lastTelemetryTime}</span>
         </div>
       </div>
 

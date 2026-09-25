@@ -19,6 +19,7 @@ import { SafetyEngine } from './safety/SafetyEngine';
 import { AlertEngine } from './alerts/AlertEngine';
 import { OfflineEngine } from './offline/OfflineEngine';
 import { AuthManager } from './auth/AuthManager';
+import { RealtimePublisher } from './realtime/RealtimePublisher';
 import type { DbTelemetry, UserRole, DbUserProfile } from './types';
 
 export class BackendApp {
@@ -33,9 +34,24 @@ export class BackendApp {
     // Check offline heartbeats every 3 seconds
     if (typeof setInterval !== 'undefined') {
       const timer = setInterval(() => {
-        const helmets = this.db.getHelmets();
+        const helmets = this.db.getRawHelmets();
         const alerts = this.db.getAlertsStore();
-        OfflineEngine.checkFleetHeartbeats(helmets, alerts);
+        const { statusChanges, newAlerts, resolvedAlerts } = OfflineEngine.checkFleetHeartbeats(helmets, alerts);
+
+        statusChanges.forEach((sc) => {
+          const helmet = this.db.getHelmetWithDetails(sc.helmetId);
+          if (helmet) {
+            RealtimePublisher.getInstance().publish('helmets', 'UPDATE', helmet);
+          }
+        });
+
+        newAlerts.forEach((alert) => {
+          RealtimePublisher.getInstance().publish('alerts', 'INSERT', alert);
+        });
+
+        resolvedAlerts.forEach((alert) => {
+          RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
+        });
       }, 3000);
       if (typeof timer.unref === 'function') {
         timer.unref();
@@ -195,6 +211,23 @@ export class BackendApp {
           safety
         );
 
+        // Realtime Broadcast (Authoritative Database Changes)
+        const publisher = RealtimePublisher.getInstance();
+        publisher.publish('telemetry', 'INSERT', telemetryRecord);
+
+        const updatedHelmet = this.db.getHelmetWithDetails(packet.helmetId);
+        if (updatedHelmet) {
+          publisher.publish('helmets', 'UPDATE', updatedHelmet);
+        }
+
+        if (alertResult.createdAlert) {
+          publisher.publish('alerts', 'INSERT', alertResult.createdAlert);
+        }
+
+        alertResult.resolvedAlerts.forEach((resolved) => {
+          publisher.publish('alerts', 'UPDATE', resolved);
+        });
+
         this.sendJson(res, 201, {
           success: true,
           packetId: packet.packetId,
@@ -223,6 +256,42 @@ export class BackendApp {
       // 4. AUTHENTICATION & AUTHORIZATION ENFORCEMENT
       // =========================================================================
       const currentUser = this.authManager.authenticateRequest(req);
+
+      // =========================================================================
+      // REALTIME STREAM (/api/v1/realtime/stream - SSE with RBAC Isolation)
+      // =========================================================================
+      if (pathname === '/api/v1/realtime/stream' && method === 'GET') {
+        if (!currentUser) {
+          this.sendJson(res, 401, { error: 'Unauthorized: Authentication required for realtime stream' });
+          return true;
+        }
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+
+        let assignedHelmetId: string | null = null;
+        if (currentUser.role === 'WORKER' && currentUser.worker_id) {
+          const h = this.db.getHelmets().find((hlm) => hlm.worker_id === currentUser.worker_id);
+          assignedHelmetId = h ? h.id : null;
+        }
+
+        const clientId = `client-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        RealtimePublisher.getInstance().addSseClient({
+          id: clientId,
+          res,
+          role: currentUser.role,
+          workerId: currentUser.worker_id ?? null,
+          assignedHelmetId,
+        });
+
+        res.write(
+          `event: status\ndata: ${JSON.stringify({ status: 'CONNECTED', role: currentUser.role, workerId: currentUser.worker_id, assignedHelmetId })}\n\n`
+        );
+        return true;
+      }
 
       // =========================================================================
       // 5. ADMIN AREA ENDPOINTS (/api/v1/admin/*)
@@ -509,6 +578,13 @@ export class BackendApp {
           'CHECK_IN'
         );
 
+        // Realtime Broadcast
+        RealtimePublisher.getInstance().publish('zone_assignments', 'INSERT', assignment);
+        if (helmet) {
+          const updatedHelmet = this.db.getHelmetWithDetails(helmet.id);
+          if (updatedHelmet) RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
+        }
+
         this.db.logAuditAction({
           user_id: currentUser.id,
           user_email: currentUser.email,
@@ -545,6 +621,19 @@ export class BackendApp {
         }
 
         const checkedOut = this.db.checkOutWorker(worker.id);
+        const helmet = this.db.getHelmets().find((h) => h.worker_id === worker.id);
+
+        // Realtime Broadcast
+        RealtimePublisher.getInstance().publish('zone_assignments', 'UPDATE', {
+          worker_id: worker.id,
+          helmet_id: helmet?.id || '',
+          active: false,
+          checked_out_at: new Date().toISOString(),
+        });
+        if (helmet) {
+          const updatedHelmet = this.db.getHelmetWithDetails(helmet.id);
+          if (updatedHelmet) RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
+        }
 
         this.db.logAuditAction({
           user_id: currentUser.id,
@@ -599,6 +688,13 @@ export class BackendApp {
 
         if (body.updateDefault) {
           worker.assigned_zone_id = zone.id;
+        }
+
+        // Realtime Broadcast
+        RealtimePublisher.getInstance().publish('zone_assignments', 'INSERT', assignment);
+        if (helmet) {
+          const updatedHelmet = this.db.getHelmetWithDetails(helmet.id);
+          if (updatedHelmet) RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
         }
 
         this.db.logAuditAction({
@@ -759,6 +855,9 @@ export class BackendApp {
         if (!alert) {
           this.sendJson(res, 404, { error: `Alert ${alertId} not found` });
         } else {
+          // Realtime Broadcast
+          RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
+
           this.db.logAuditAction({
             user_id: currentUser.id,
             user_email: currentUser.email,
@@ -794,6 +893,9 @@ export class BackendApp {
         if (!alert) {
           this.sendJson(res, 404, { error: `Alert ${alertId} not found` });
         } else {
+          // Realtime Broadcast
+          RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
+
           this.db.logAuditAction({
             user_id: currentUser.id,
             user_email: currentUser.email,

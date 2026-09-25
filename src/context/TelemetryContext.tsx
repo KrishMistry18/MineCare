@@ -1,5 +1,10 @@
 /**
  * MineCare - Telemetry & Zone React Context & Provider
+ *
+ * Drives real-time state synchronization via Supabase Realtime:
+ * - Realtime connection state (CONNECTED, CONNECTING, DISCONNECTED, ERROR)
+ * - Live authoritative updates for Helmets, Alerts, Zones, and Workers
+ * - Role-based isolation for Worker portal
  */
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
@@ -10,8 +15,10 @@ import type { ScenarioType, TelemetryHistoryPoint } from '../types/telemetry';
 import type { MineZone, ZoneOccupancySummary } from '../types/zone';
 import type { WorkerProfile } from '../types/worker';
 import { audioAlert } from '../utils/audioAlert';
+import { useAuth } from './AuthContext';
+import type { RealtimeConnectionState } from '../services/realtime/SupabaseRealtimeService';
 
-interface TelemetryContextValue {
+export interface TelemetryContextValue {
   helmets: HelmetDevice[];
   alerts: SafetyAlert[];
   selectedHelmet: HelmetDevice | null;
@@ -28,6 +35,11 @@ interface TelemetryContextValue {
   providerId: string;
   isSimulation: boolean;
 
+  // Real-time operations & diagnostics
+  realtimeStatus: RealtimeConnectionState;
+  realtimeProvider: string;
+  lastTelemetryTime: string;
+
   // Zone & Worker Tracking APIs
   zones: MineZone[];
   workers: WorkerProfile[];
@@ -42,6 +54,7 @@ interface TelemetryContextValue {
 const TelemetryContext = createContext<TelemetryContextValue | null>(null);
 
 export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
   const service = TelemetryService.getInstance();
   const zoneProvider = service.getZoneProvider();
 
@@ -53,22 +66,41 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [audioMuted, setAudioMuted] = useState<boolean>(true); // Default muted to respect browser UX
 
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeConnectionState>(
+    service.getRealtimeConnectionState()
+  );
+  const [lastTelemetryTime, setLastTelemetryTime] = useState<string>(
+    service.getLastTelemetryTime()
+  );
+
+  // Sync auth context with RealtimeService for RBAC filtering
   useEffect(() => {
-    const unsubscribe = service.subscribe(() => {
-      const updatedHelmets = service.getHelmets();
-      setHelmets(updatedHelmets);
+    service.getRealtimeService().setUser(
+      user ? { role: user.role, worker_id: user.worker_id } : null
+    );
+  }, [user, service]);
+
+  useEffect(() => {
+    const unsubService = service.subscribe(() => {
+      setHelmets(service.getHelmets());
       setAlerts(service.getAlerts());
       setWorkers(zoneProvider.getWorkers());
+      setLastTelemetryTime(service.getLastTelemetryTime());
+    });
+
+    const unsubRealtime = service.onRealtimeConnectionStateChange((state) => {
+      setRealtimeStatus(state);
     });
 
     return () => {
-      unsubscribe();
+      unsubService();
+      unsubRealtime();
     };
   }, [service, zoneProvider]);
 
   // Audio alarm handling when any helmet is in DANGER status
-  const dangerHelmets = helmets.filter(h => h.safety.status === 'DANGER');
-  const warningHelmets = helmets.filter(h => h.safety.status === 'WARNING');
+  const dangerHelmets = helmets.filter((h) => h.safety.status === 'DANGER');
+  const warningHelmets = helmets.filter((h) => h.safety.status === 'WARNING');
 
   useEffect(() => {
     if (dangerHelmets.length > 0 && !audioMuted) {
@@ -102,7 +134,11 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return res;
   };
 
-  const changeWorkerZone = (helmetId: string, newZoneName: string, updateDefault: boolean = false): boolean => {
+  const changeWorkerZone = (
+    helmetId: string,
+    newZoneName: string,
+    updateDefault: boolean = false
+  ): boolean => {
     const res = zoneProvider.assignZone(helmetId, newZoneName, updateDefault);
     if (res) {
       setWorkers(zoneProvider.getWorkers());
@@ -112,8 +148,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const zoneOccupancies = zoneProvider.getZoneOccupancies(helmets);
-
-  const selectedHelmet = helmets.find(h => h.helmetId === selectedHelmetId) || helmets[0] || null;
+  const selectedHelmet = helmets.find((h) => h.helmetId === selectedHelmetId) || helmets[0] || null;
 
   return (
     <TelemetryContext.Provider
@@ -126,13 +161,19 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         getTelemetryHistory: (id: string) => service.getTelemetryHistory(id),
         acknowledgeAlert: (alertId: string) => service.acknowledgeAlert(alertId),
         resolveAlert: (alertId: string, notes?: string) => service.resolveAlert(alertId, notes),
-        triggerScenario: (scenario: ScenarioType, helmetId?: string) => service.triggerScenario(scenario, helmetId),
+        triggerScenario: (scenario: ScenarioType, helmetId?: string) =>
+          service.triggerScenario(scenario, helmetId),
         audioMuted,
         toggleAudioMute,
         activeDangerCount: dangerHelmets.length,
         activeWarningCount: warningHelmets.length,
         providerId: service.getProvider().providerId,
         isSimulation: service.getProvider().isSimulation,
+
+        // Realtime Operations
+        realtimeStatus,
+        realtimeProvider: service.getRealtimeProviderName(),
+        lastTelemetryTime,
 
         // Zones & Worker tracking
         zones,

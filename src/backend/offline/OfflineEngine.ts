@@ -29,9 +29,10 @@ export class OfflineEngine {
     helmets: DbHelmet[],
     alerts: DbAlert[],
     nowMs: number = Date.now()
-  ): { statusChanges: Array<{ helmetId: string; state: ConnectivityState }>; newAlerts: DbAlert[] } {
+  ): { statusChanges: Array<{ helmetId: string; state: ConnectivityState }>; newAlerts: DbAlert[]; resolvedAlerts: DbAlert[] } {
     const statusChanges: Array<{ helmetId: string; state: ConnectivityState }> = [];
     const newAlerts: DbAlert[] = [];
+    const resolvedAlerts: DbAlert[] = [];
 
     helmets.forEach((helmet) => {
       const state = this.evaluateConnectivity(helmet.last_seen, nowMs);
@@ -79,11 +80,12 @@ export class OfflineEngine {
             a.resolved_at = new Date(nowMs).toISOString();
             a.supervisor_notes = 'Auto-resolved: Heartbeat packet stream re-established.';
             a.updated_at = new Date(nowMs).toISOString();
+            resolvedAlerts.push(a);
           }
         });
       }
     });
 
-    return { statusChanges, newAlerts };
+    return { statusChanges, newAlerts, resolvedAlerts };
   }
 }

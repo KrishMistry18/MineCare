@@ -14,9 +14,8 @@ import { useAuth } from '../../context/AuthContext';
 import { HARDWARE_PINOUT_SPEC } from '../../types/helmet';
 
 export const SystemHealthPage: React.FC = () => {
-  const { helmets, alerts } = useTelemetry();
+  const { helmets, alerts, realtimeStatus, realtimeProvider } = useTelemetry();
   const { role, isAuthenticated } = useAuth();
-
 
   const totalHelmets = helmets.length;
   const onlineHelmets = helmets.filter(h => h.connectivity === 'ONLINE').length;
@@ -64,14 +63,30 @@ export const SystemHealthPage: React.FC = () => {
 
         <div className="bg-[#0c131f] border border-[#182335] rounded-xl p-4 space-y-2">
           <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider font-semibold">
-            STREAM
+            REALTIME STREAM
           </div>
-          <div className="text-base font-bold text-emerald-400 flex items-center space-x-1.5 font-mono">
-            <Radio className="w-4 h-4 text-emerald-400" />
-            <span>CONNECTED</span>
+          <div className={`text-base font-bold flex items-center space-x-1.5 font-mono ${
+            realtimeStatus === 'CONNECTED'
+              ? 'text-emerald-400'
+              : realtimeStatus === 'CONNECTING'
+              ? 'text-amber-400'
+              : realtimeStatus === 'ERROR'
+              ? 'text-red-400'
+              : 'text-slate-400'
+          }`}>
+            <Radio className={`w-4 h-4 ${
+              realtimeStatus === 'CONNECTED'
+                ? 'text-emerald-400'
+                : realtimeStatus === 'CONNECTING'
+                ? 'text-amber-400 animate-pulse'
+                : realtimeStatus === 'ERROR'
+                ? 'text-red-400'
+                : 'text-slate-500'
+            }`} />
+            <span>{realtimeStatus}</span>
           </div>
-          <div className="text-[11px] text-slate-500 font-mono">
-            2.0s streaming rate
+          <div className="text-[11px] text-slate-500 font-mono truncate">
+            {realtimeProvider}
           </div>
         </div>
 

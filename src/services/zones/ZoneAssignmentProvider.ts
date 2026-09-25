@@ -139,6 +139,33 @@ export class ZoneAssignmentProvider implements IZoneAssignmentProvider {
     return true;
   }
 
+  public applyRealtimeAssignment(assignment: { worker_id: string; zone_id?: string; active: boolean }): void {
+    const worker = this.workers.find((w) => w.workerId === assignment.worker_id);
+    if (!worker) return;
+
+    if (!assignment.active) {
+      worker.currentWorkZone = null;
+      worker.zone = 'Checked Out';
+      worker.checkOutTime = new Date().toISOString();
+    } else if (assignment.zone_id) {
+      const cleanTargetId = assignment.zone_id.toLowerCase().replace(/^zone-/, '');
+      const zone = this.zones.find(
+        (z) =>
+          z.id.toLowerCase() === assignment.zone_id?.toLowerCase() ||
+          z.id.toLowerCase().replace(/^zone-/, '') === cleanTargetId ||
+          z.name.toLowerCase() === assignment.zone_id?.toLowerCase() ||
+          z.name.toLowerCase().includes(cleanTargetId.replace(/-/g, ' '))
+      );
+      if (zone) {
+        worker.currentWorkZone = zone.name;
+        worker.zone = zone.name;
+        worker.checkInTime = new Date().toISOString();
+        worker.checkOutTime = null;
+      }
+    }
+    this.notifyListeners();
+  }
+
   public getZoneOccupancies(helmets: HelmetDevice[]): ZoneOccupancySummary[] {
     return this.zones.map(zone => {
       // Find workers checked into this zone

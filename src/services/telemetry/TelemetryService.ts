@@ -1,28 +1,31 @@
 /**
- * MineCare - Telemetry Service
- * 
- * Central coordinator between:
- * Telemetry Source -> Telemetry Service -> State Store -> Dashboard
- * 
- * - Ingests telemetry packets from ITelemetryProvider
- * - Runs SafetyEvaluator for safety status & hardware output states
- * - Maintains 100-sample rolling time-series buffer for charts
- * - Manages incident alerts and alert history
- * - Tracks heartbeats and offline timeouts
- * - Provides swap-in hook for ESP8266TelemetryProvider
+ * MineCare - Telemetry Service (Phase 4 Real-Time Operations)
+ *
+ * Central coordinator for live telemetry & operational state:
+ * - Subscribes to Supabase Realtime for authoritative database changes:
+ *   * 'telemetry' (INSERT)
+ *   * 'helmets' (UPDATE)
+ *   * 'alerts' (INSERT | UPDATE)
+ *   * 'zone_assignments' (INSERT | UPDATE)
+ * - Employs backend SafetyEngine & AlertEngine as sole authoritative source
+ * - Maintains 100-point rolling history buffer for charts
+ * - Exposes real-time connection status (CONNECTED, CONNECTING, DISCONNECTED, ERROR)
+ * - Provides clean subscription lifecycle and unmount cleanup
  */
 
 import type { ITelemetryProvider } from './ITelemetryProvider';
 import { MockTelemetryProvider } from './MockTelemetryProvider';
-import { SafetyEvaluator } from './SafetyEvaluator';
 import type { HelmetTelemetryPacket, TelemetryHistoryPoint, ScenarioType } from '../../types/telemetry';
 import type { SafetyEvaluationResult } from '../../types/safety';
 import type { HelmetDevice, ConnectivityStatus } from '../../types/helmet';
 import type { SafetyAlert } from '../../types/alert';
 import { ZoneAssignmentProvider } from '../zones/ZoneAssignmentProvider';
 import { alertService } from '../api/alertService';
-import { DatabaseRepository } from '../../backend/db/DatabaseRepository';
-import { AlertEngine } from '../../backend/alerts/AlertEngine';
+import {
+  SupabaseRealtimeService,
+  type RealtimeConnectionState,
+} from '../realtime/SupabaseRealtimeService';
+import type { DbAlert, DbHelmet, DbTelemetry, DbZoneAssignment } from '../../backend/types';
 
 export type ServiceListener = () => void;
 
@@ -30,7 +33,10 @@ export class TelemetryService {
   private static instance: TelemetryService | null = null;
   private provider: ITelemetryProvider;
   private zoneProvider: ZoneAssignmentProvider;
-  private unsubscribeProvider: (() => void) | null = null;
+  private realtimeService: SupabaseRealtimeService;
+
+  // Realtime cleanup unsubscribers
+  private realtimeUnsubscribers: Array<() => void> = [];
 
   // State caches
   private latestPackets: Map<string, HelmetTelemetryPacket> = new Map();
@@ -39,7 +45,7 @@ export class TelemetryService {
   private lastSeenTimestamps: Map<string, number> = new Map();
   private connectivityStates: Map<string, ConnectivityStatus> = new Map();
   private alerts: SafetyAlert[] = [];
-  private lastAlertTriggers: Map<string, string> = new Map();
+  private lastTelemetryTime: string = '';
 
   // Listeners for UI state updates
   private listeners: Set<ServiceListener> = new Set();
@@ -47,6 +53,7 @@ export class TelemetryService {
   private constructor() {
     this.provider = new MockTelemetryProvider();
     this.zoneProvider = ZoneAssignmentProvider.getInstance();
+    this.realtimeService = SupabaseRealtimeService.getInstance();
     this.init();
   }
 
@@ -57,46 +64,306 @@ export class TelemetryService {
     return TelemetryService.instance;
   }
 
+  /**
+   * Reset instance (for test isolation)
+   */
+  public static resetInstance(): void {
+    if (TelemetryService.instance) {
+      TelemetryService.instance.cleanup();
+      TelemetryService.instance = null;
+    }
+  }
+
   private init(): void {
-    // Start listening to provider
-    this.unsubscribeProvider = this.provider.subscribeAll((packet) => {
-      this.handleIncomingPacket(packet);
+    // 1. Initialize fleet baselines so UI immediately renders commissioned helmets
+    const registered = this.provider.getRegisteredHelmetIds();
+    registered.forEach((id) => {
+      this.latestPackets.set(id, this.createPlaceholderPacket(id));
+      this.connectivityStates.set(id, 'ONLINE');
+      this.safetyStates.set(id, {
+        status: 'SAFE',
+        primaryTrigger: 'NOMINAL',
+        triggerDetails: ['All parameters normal'],
+        outputs: { greenLed: true, redLed: false, buzzer: false },
+        isPrototypeNotice: true,
+      });
     });
 
-    // Listen to zone assignment updates
+    // 2. Setup Supabase Realtime Subscriptions
+    this.setupRealtimeSubscriptions();
+
+    // 3. Listen to zone assignment updates
     this.zoneProvider.subscribe(() => {
       this.notifyListeners();
     });
 
-    // Check for offline helmets every 3 seconds
-    setInterval(() => {
-      this.checkHeartbeats();
-    }, 3000);
-
-    // Connect provider
+    // 4. Connect telemetry provider simulator
     this.provider.connect();
   }
 
   /**
-   * Swap out the telemetry provider (e.g., from MockTelemetryProvider to ESP8266TelemetryProvider)
+   * Subscribe only to the 4 required authoritative operational tables
    */
-  public async setProvider(newProvider: ITelemetryProvider): Promise<void> {
-    if (this.unsubscribeProvider) {
-      this.unsubscribeProvider();
-      this.unsubscribeProvider = null;
-    }
-    await this.provider.disconnect();
+  private setupRealtimeSubscriptions(): void {
+    // Cleanup any existing subscriptions
+    this.cleanupRealtime();
 
-    this.provider = newProvider;
-    this.unsubscribeProvider = this.provider.subscribeAll((packet) => {
-      this.handleIncomingPacket(packet);
+    // A. TELEMETRY (INSERT)
+    const unsubTelemetry = this.realtimeService.subscribeTable<DbTelemetry>('telemetry', (payload) => {
+      if (payload.eventType === 'INSERT' && payload.new) {
+        this.handleRealtimeTelemetry(payload.new);
+      }
     });
-    await this.provider.connect();
+
+    // B. HELMETS (UPDATE)
+    const unsubHelmets = this.realtimeService.subscribeTable<DbHelmet>('helmets', (payload) => {
+      if (payload.new) {
+        this.handleRealtimeHelmet(payload.new);
+      }
+    });
+
+    // C. ALERTS (INSERT | UPDATE)
+    const unsubAlerts = this.realtimeService.subscribeTable<DbAlert>('alerts', (payload) => {
+      if (payload.new) {
+        this.handleRealtimeAlert(payload.new, payload.eventType);
+      }
+    });
+
+    // D. ZONE_ASSIGNMENTS (INSERT | UPDATE)
+    const unsubZones = this.realtimeService.subscribeTable<DbZoneAssignment>('zone_assignments', (payload) => {
+      if (payload.new) {
+        this.handleRealtimeZoneAssignment(payload.new);
+      }
+    });
+
+    this.realtimeUnsubscribers = [unsubTelemetry, unsubHelmets, unsubAlerts, unsubZones];
+  }
+
+  private cleanupRealtime(): void {
+    this.realtimeUnsubscribers.forEach((unsub) => unsub());
+    this.realtimeUnsubscribers = [];
+  }
+
+  public cleanup(): void {
+    this.cleanupRealtime();
+    this.provider.disconnect();
+    this.listeners.clear();
+  }
+
+  // --- Realtime Event Handlers ---
+
+  private handleRealtimeTelemetry(row: DbTelemetry): void {
+    const helmetId = row.helmet_id;
+    const packet: HelmetTelemetryPacket = {
+      packetId: row.id,
+      helmetId,
+      timestamp: row.timestamp,
+      sequenceNumber: Number(row.sequence_number),
+      dht22: { temperature: Number(row.temperature), humidity: Number(row.humidity) },
+      mq2: { rawGasValue: Number(row.gas_value) },
+      mpu6050: {
+        accelX: Number(row.acceleration_x),
+        accelY: Number(row.acceleration_y),
+        accelZ: Number(row.acceleration_z),
+        totalAcceleration: Number(row.total_acceleration),
+        gyroX: Number(row.gyro_x),
+        gyroY: Number(row.gyro_y),
+        gyroZ: Number(row.gyro_z),
+      },
+      sosPressed: Boolean(row.sos_pressed),
+      fallDetected: Boolean(row.fall_detected),
+      sensorHealth: { dht22: true, mq2: true, mpu6050: true },
+      outputs: {
+        greenLed: row.safety_status === 'SAFE',
+        redLed: row.safety_status === 'DANGER',
+        buzzer: row.safety_status === 'DANGER',
+      },
+      rssi: -65,
+      batteryVolts: 4.1,
+    };
+
+    this.latestPackets.set(helmetId, packet);
+    this.lastSeenTimestamps.set(helmetId, Date.now());
+    this.connectivityStates.set(helmetId, 'ONLINE');
+
+    // Update authoritative safety state
+    this.safetyStates.set(helmetId, {
+      status: row.safety_status,
+      primaryTrigger:
+        row.safety_status === 'SAFE'
+          ? 'NOMINAL'
+          : row.sos_pressed
+          ? 'SOS_BUTTON_TRIGGERED'
+          : row.fall_detected || row.total_acceleration > 15
+          ? 'FALL_IMPACT_DETECTED'
+          : row.gas_value > 800 && row.temperature > 40
+          ? 'MULTIPLE_HAZARDS'
+          : row.gas_value > 800
+          ? 'HIGH_RAW_GAS_LEVEL'
+          : 'HIGH_TEMPERATURE',
+      triggerDetails: [],
+      outputs: {
+        greenLed: row.safety_status === 'SAFE',
+        redLed: row.safety_status === 'DANGER',
+        buzzer: row.safety_status === 'DANGER',
+      },
+      isPrototypeNotice: true,
+    });
+
+    // Update rolling history buffer (100 points)
+    const history = this.telemetryHistories.get(helmetId) || [];
+    const dateObj = new Date(row.timestamp);
+    const timeFormatted = dateObj.toTimeString().split(' ')[0];
+
+    const historyPoint: TelemetryHistoryPoint = {
+      timestamp: row.timestamp,
+      timeFormatted,
+      temperature: Number(row.temperature),
+      humidity: Number(row.humidity),
+      rawGasValue: Number(row.gas_value),
+      totalAcceleration: Number(row.total_acceleration),
+      accelX: Number(row.acceleration_x),
+      accelY: Number(row.acceleration_y),
+      accelZ: Number(row.acceleration_z),
+      gyroX: Number(row.gyro_x),
+      gyroY: Number(row.gyro_y),
+      gyroZ: Number(row.gyro_z),
+      sosPressed: Boolean(row.sos_pressed),
+      fallDetected: Boolean(row.fall_detected),
+    };
+
+    history.push(historyPoint);
+    if (history.length > 100) {
+      history.shift();
+    }
+    this.telemetryHistories.set(helmetId, history);
+
+    // Update authoritative last telemetry time for dashboard
+    this.lastTelemetryTime = timeFormatted;
+
     this.notifyListeners();
   }
 
-  public getProvider(): ITelemetryProvider {
-    return this.provider;
+  private handleRealtimeHelmet(row: DbHelmet): void {
+    const helmetId = row.id || row.helmet_code;
+    const isOnline = Boolean(row.online);
+
+    this.connectivityStates.set(helmetId, isOnline ? 'ONLINE' : 'OFFLINE');
+
+    const existingSafety = this.safetyStates.get(helmetId);
+    if (existingSafety) {
+      existingSafety.status = row.status;
+    } else {
+      this.safetyStates.set(helmetId, {
+        status: row.status,
+        primaryTrigger: 'NOMINAL',
+        triggerDetails: [],
+        outputs: {
+          greenLed: row.status === 'SAFE',
+          redLed: row.status === 'DANGER',
+          buzzer: row.status === 'DANGER',
+        },
+        isPrototypeNotice: true,
+      });
+    }
+
+    this.notifyListeners();
+  }
+
+  private handleRealtimeAlert(row: DbAlert, eventType: string): void {
+    const worker = this.zoneProvider.getWorkerByHelmetId(row.helmet_id);
+    const alert = this.convertDbAlertToSafetyAlert(row, worker?.name, worker?.currentWorkZone || undefined);
+
+    const existingIndex = this.alerts.findIndex((a) => a.id === row.id);
+
+    if (existingIndex >= 0) {
+      // UPDATE: Update in place
+      this.alerts[existingIndex] = alert;
+    } else if (eventType === 'INSERT') {
+      // INSERT: Prepend to active alerts
+      this.alerts.unshift(alert);
+      if (this.alerts.length > 200) {
+        this.alerts.pop();
+      }
+    } else {
+      this.alerts.unshift(alert);
+    }
+
+    this.notifyListeners();
+  }
+
+  private handleRealtimeZoneAssignment(row: DbZoneAssignment): void {
+    this.zoneProvider.applyRealtimeAssignment({
+      worker_id: row.worker_id,
+      zone_id: row.zone_id,
+      active: Boolean(row.active),
+    });
+    this.notifyListeners();
+  }
+
+  private convertDbAlertToSafetyAlert(
+    row: DbAlert,
+    workerName?: string,
+    shaftLocation?: string
+  ): SafetyAlert {
+    const isCritical = row.severity === 'CRITICAL';
+    const isResolved = row.status === 'RESOLVED' || Boolean(row.resolved_at);
+
+    return {
+      id: row.id,
+      timestamp: row.triggered_at,
+      helmetId: row.helmet_id,
+      workerId: row.worker_id || 'UNKNOWN',
+      workerName: workerName || (row.worker_id ? `Worker (${row.worker_id})` : `Worker (${row.helmet_id})`),
+      shaftLocation: shaftLocation || 'Portal / Surface',
+      severity: row.severity,
+      safetyStatus: isCritical ? 'DANGER' : 'WARNING',
+      category: row.type,
+      title: isCritical ? `CRITICAL SAFETY ALERT: ${row.type}` : `WARNING: Elevated Parameter`,
+      description: row.message,
+      readingsSnapshot: {
+        temperature: row.readings_snapshot?.temperature ?? 0,
+        humidity: row.readings_snapshot?.humidity ?? 0,
+        rawGasValue: row.readings_snapshot?.gas_value ?? 0,
+        totalAcceleration: row.readings_snapshot?.total_acceleration ?? 9.8,
+        sosPressed: Boolean(row.readings_snapshot?.sos_pressed),
+        fallDetected: Boolean(row.readings_snapshot?.fall_detected),
+      },
+      acknowledged: row.status === 'ACKNOWLEDGED' || Boolean(row.acknowledged_at),
+      acknowledgedBy: row.acknowledged_by || undefined,
+      acknowledgedAt: row.acknowledged_at || undefined,
+      resolved: isResolved,
+      resolvedAt: row.resolved_at || undefined,
+      supervisorNotes: row.supervisor_notes || undefined,
+    };
+  }
+
+  // --- Realtime Connection & Status Accessors ---
+
+  public getRealtimeConnectionState(): RealtimeConnectionState {
+    return this.realtimeService.getConnectionState();
+  }
+
+  public getRealtimeProviderName(): string {
+    return this.realtimeService.getProviderName();
+  }
+
+  public onRealtimeConnectionStateChange(listener: (state: RealtimeConnectionState) => void): () => void {
+    return this.realtimeService.onConnectionStateChange(listener);
+  }
+
+  public getLastTelemetryTime(): string {
+    if (this.lastTelemetryTime) return this.lastTelemetryTime;
+    const now = new Date();
+    return now.toTimeString().split(' ')[0];
+  }
+
+  public getZoneProvider(): ZoneAssignmentProvider {
+    return this.zoneProvider;
+  }
+
+  public getRealtimeService(): SupabaseRealtimeService {
+    return this.realtimeService;
   }
 
   public subscribe(listener: ServiceListener): () => void {
@@ -108,212 +375,28 @@ export class TelemetryService {
 
   private notifyListeners(): void {
     this.listeners.forEach((listener) => {
-      try { listener(); } catch (e) { console.error('Error in TelemetryService listener', e); }
-    });
-  }
-
-  private handleIncomingPacket(packet: HelmetTelemetryPacket): void {
-    const helmetId = packet.helmetId;
-    const now = Date.now();
-    const wasOffline = this.connectivityStates.get(helmetId) === 'OFFLINE';
-
-    this.latestPackets.set(helmetId, packet);
-    this.lastSeenTimestamps.set(helmetId, now);
-    this.connectivityStates.set(helmetId, 'ONLINE');
-
-    // Auto-resolve OFFLINE alerts when packets resume
-    if (wasOffline) {
-      this.alerts.forEach(alert => {
-        if (alert.helmetId === helmetId && alert.category === 'HELMET_OFFLINE' && !alert.resolved) {
-          alert.resolved = true;
-          alert.resolvedAt = new Date().toISOString();
-          alert.supervisorNotes = 'Auto-resolved: Telemetry packet stream re-established.';
-        }
-      });
-    }
-
-    // Run safety evaluation
-    const safety = SafetyEvaluator.evaluate(packet);
-    this.safetyStates.set(helmetId, safety);
-
-    // Update rolling history (limit to 100 points)
-    const history = this.telemetryHistories.get(helmetId) || [];
-    const dateObj = new Date(packet.timestamp);
-    const timeFormatted = dateObj.toTimeString().split(' ')[0];
-
-    const historyPoint: TelemetryHistoryPoint = {
-      timestamp: packet.timestamp,
-      timeFormatted,
-      temperature: packet.dht22.temperature,
-      humidity: packet.dht22.humidity,
-      rawGasValue: packet.mq2.rawGasValue,
-      totalAcceleration: packet.mpu6050.totalAcceleration,
-      accelX: packet.mpu6050.accelX,
-      accelY: packet.mpu6050.accelY,
-      accelZ: packet.mpu6050.accelZ,
-      gyroX: packet.mpu6050.gyroX,
-      gyroY: packet.mpu6050.gyroY,
-      gyroZ: packet.mpu6050.gyroZ,
-      sosPressed: packet.sosPressed,
-      fallDetected: packet.fallDetected,
-    };
-
-    history.push(historyPoint);
-    if (history.length > 100) {
-      history.shift();
-    }
-    this.telemetryHistories.set(helmetId, history);
-
-    // Alert Generation & Resolution Logic
-    this.processAlerts(helmetId, packet, safety);
-
-    this.notifyListeners();
-  }
-
-  private processAlerts(
-    helmetId: string, 
-    packet: HelmetTelemetryPacket, 
-    safety: SafetyEvaluationResult
-  ): void {
-    // When returning to SAFE, resolve any active hazard alerts for this helmet
-    if (safety.status === 'SAFE') {
-      this.lastAlertTriggers.delete(helmetId);
-
-      let hadUnresolved = false;
-      this.alerts.forEach(alert => {
-        if (alert.helmetId === helmetId && !alert.resolved && alert.category !== 'HELMET_OFFLINE') {
-          alert.resolved = true;
-          alert.resolvedAt = new Date().toISOString();
-          alert.supervisorNotes = 'Auto-resolved: Environmental/biometric parameters restored to safe baseline.';
-          hadUnresolved = true;
-        }
-      });
-
-      if (hadUnresolved) {
-        this.notifyListeners();
-      }
-      return;
-    }
-
-    const triggerKey = `${safety.status}_${safety.primaryTrigger}`;
-    const lastKey = this.lastAlertTriggers.get(helmetId);
-
-    if (triggerKey === lastKey) {
-      // Update readings snapshot for ongoing active incident without spawning duplicates
-      const existingAlert = this.alerts.find(a => a.helmetId === helmetId && !a.resolved);
-      if (existingAlert) {
-        existingAlert.readingsSnapshot = {
-          temperature: packet.dht22.temperature,
-          humidity: packet.dht22.humidity,
-          rawGasValue: packet.mq2.rawGasValue,
-          totalAcceleration: packet.mpu6050.totalAcceleration,
-          sosPressed: packet.sosPressed,
-          fallDetected: packet.fallDetected,
-        };
-        existingAlert.description = safety.triggerDetails.join(' | ');
-      }
-      return;
-    }
-
-    this.lastAlertTriggers.set(helmetId, triggerKey);
-
-      const worker = this.zoneProvider.getWorkerByHelmetId(helmetId);
-      const isCritical = safety.status === 'DANGER';
-
-      let category: SafetyAlert['category'] = 'GAS_HAZARD';
-      if (safety.primaryTrigger === 'SOS_BUTTON_TRIGGERED') category = 'SOS_EMERGENCY';
-      else if (safety.primaryTrigger === 'FALL_IMPACT_DETECTED') category = 'WORKER_FALL';
-      else if (safety.primaryTrigger === 'MULTIPLE_HAZARDS') category = 'MULTI_HAZARD';
-      else if (safety.primaryTrigger === 'HIGH_TEMPERATURE') category = 'HEAT_STRESS';
-
-      const alert: SafetyAlert = {
-        id: `ALT-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        timestamp: packet.timestamp,
-        helmetId,
-        workerId: worker?.workerId || 'UNKNOWN',
-        workerName: worker?.name || `Worker (${helmetId})`,
-        shaftLocation: worker?.currentWorkZone || worker?.assignedZone || 'Portal / Surface',
-        severity: isCritical ? 'CRITICAL' : 'WARNING',
-        safetyStatus: safety.status,
-        category,
-        title: isCritical ? `CRITICAL SAFETY ALERT: ${safety.primaryTrigger}` : `WARNING: Elevated Parameter`,
-        description: safety.triggerDetails.join(' | '),
-        readingsSnapshot: {
-          temperature: packet.dht22.temperature,
-          humidity: packet.dht22.humidity,
-          rawGasValue: packet.mq2.rawGasValue,
-          totalAcceleration: packet.mpu6050.totalAcceleration,
-          sosPressed: packet.sosPressed,
-          fallDetected: packet.fallDetected,
-        },
-        acknowledged: false,
-        resolved: false,
-      };
-
-      this.alerts.unshift(alert);
-      // Keep up to 200 alerts in memory
-      if (this.alerts.length > 200) {
-        this.alerts.pop();
-      }
-  }
-
-  private checkHeartbeats(): void {
-    const now = Date.now();
-    let changed = false;
-
-    this.lastSeenTimestamps.forEach((lastSeen, helmetId) => {
-      const diff = now - lastSeen;
-      const currentConn = this.connectivityStates.get(helmetId);
-
-      // If no packet for > 8 seconds, mark as OFFLINE
-      if (diff > 8000 && currentConn !== 'OFFLINE') {
-        this.connectivityStates.set(helmetId, 'OFFLINE');
-        changed = true;
-
-        const worker = this.zoneProvider.getWorkerByHelmetId(helmetId);
-        this.alerts.unshift({
-          id: `ALT-OFFLINE-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          helmetId,
-          workerId: worker?.workerId || 'UNKNOWN',
-          workerName: worker?.name || `Worker (${helmetId})`,
-          shaftLocation: worker?.currentWorkZone || worker?.assignedZone || 'Portal / Surface',
-          severity: 'WARNING',
-          safetyStatus: 'WARNING',
-          category: 'HELMET_OFFLINE',
-          title: `HELMET TELEMETRY OFFLINE: ${helmetId}`,
-          description: `Missing packet heartbeat for > 8 seconds. Telemetry stream disrupted.`,
-          readingsSnapshot: {
-            temperature: 0,
-            humidity: 0,
-            rawGasValue: 0,
-            totalAcceleration: 0,
-            sosPressed: false,
-            fallDetected: false,
-          },
-          acknowledged: false,
-          resolved: false,
-        });
+      try {
+        listener();
+      } catch (e) {
+        console.error('Error in TelemetryService listener', e);
       }
     });
-
-    if (changed) {
-      this.notifyListeners();
-    }
   }
 
   // --- Public Data Accessors ---
 
-  public getZoneProvider(): ZoneAssignmentProvider {
-    return this.zoneProvider;
-  }
-
   public getHelmets(): HelmetDevice[] {
     const registeredIds = this.provider.getRegisteredHelmetIds();
 
-    return registeredIds.map(id => {
+    return registeredIds.map((id) => {
       const telemetry = this.latestPackets.get(id) || this.createPlaceholderPacket(id);
-      const safety = this.safetyStates.get(id) || SafetyEvaluator.evaluate(telemetry);
+      const safety: SafetyEvaluationResult = this.safetyStates.get(id) || {
+        status: 'SAFE',
+        primaryTrigger: 'NOMINAL',
+        triggerDetails: [],
+        outputs: { greenLed: true, redLed: false, buzzer: false },
+        isPrototypeNotice: true,
+      };
       const connectivity = this.connectivityStates.get(id) || 'ONLINE';
       const worker = this.zoneProvider.getWorkerByHelmetId(id);
       const currentWorkZone = worker?.currentWorkZone ?? null;
@@ -336,7 +419,7 @@ export class TelemetryService {
   }
 
   public getHelmet(helmetId: string): HelmetDevice | undefined {
-    return this.getHelmets().find(h => h.helmetId === helmetId);
+    return this.getHelmets().find((h) => h.helmetId === helmetId);
   }
 
   public getTelemetryHistory(helmetId: string): TelemetryHistoryPoint[] {
@@ -348,53 +431,39 @@ export class TelemetryService {
   }
 
   public acknowledgeAlert(alertId: string, supervisorName: string = 'Supervisor On-Duty'): void {
-    const alert = this.alerts.find(a => a.id === alertId);
+    const alert = this.alerts.find((a) => a.id === alertId);
     if (alert) {
       alert.acknowledged = true;
       alert.acknowledgedBy = supervisorName;
       alert.acknowledgedAt = new Date().toISOString();
-
-      try {
-        AlertEngine.acknowledge(
-          DatabaseRepository.getInstance().getAlertsStore(),
-          alertId,
-          supervisorName
-        );
-      } catch {
-        // Fallback
-      }
-
-      alertService.acknowledgeAlert(alertId, supervisorName).catch(() => {});
       this.notifyListeners();
     }
+
+    // Call backend authoritative endpoint
+    alertService.acknowledgeAlert(alertId, supervisorName).catch(() => {});
   }
 
   public resolveAlert(alertId: string, notes?: string): void {
-    const alert = this.alerts.find(a => a.id === alertId);
+    const alert = this.alerts.find((a) => a.id === alertId);
     if (alert) {
       alert.resolved = true;
       alert.resolvedAt = new Date().toISOString();
       if (notes) alert.supervisorNotes = notes;
-
-      try {
-        AlertEngine.resolve(
-          DatabaseRepository.getInstance().getAlertsStore(),
-          alertId,
-          notes
-        );
-      } catch {
-        // Fallback
-      }
-
-      alertService.resolveAlert(alertId, notes).catch(() => {});
       this.notifyListeners();
     }
+
+    // Call backend authoritative endpoint
+    alertService.resolveAlert(alertId, notes).catch(() => {});
   }
 
   public triggerScenario(scenario: ScenarioType, helmetId?: string): void {
     if (this.provider.triggerScenario) {
       this.provider.triggerScenario(scenario, helmetId);
     }
+  }
+
+  public getProvider(): ITelemetryProvider {
+    return this.provider;
   }
 
   private createPlaceholderPacket(helmetId: string): HelmetTelemetryPacket {
@@ -419,7 +488,7 @@ export class TelemetryService {
       sensorHealth: { dht22: true, mq2: true, mpu6050: true },
       outputs: { greenLed: true, redLed: false, buzzer: false },
       rssi: -65,
-      batteryVolts: 4.10,
+      batteryVolts: 4.1,
     };
   }
 }

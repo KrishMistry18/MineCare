@@ -192,3 +192,7 @@ INSERT INTO zone_assignments (id, worker_id, helmet_id, zone_id, assigned_at, ch
 ('ZA-015', 'WRK-015', 'MC-015', 'zone-level-3-haul-road',   NOW() - INTERVAL '3 hours', NOW() - INTERVAL '3 hours', 'DEFAULT_INITIAL', TRUE),
 ('ZA-016', 'WRK-016', 'MC-016', 'zone-portal-surface',      NOW() - INTERVAL '3 hours', NOW() - INTERVAL '3 hours', 'DEFAULT_INITIAL', TRUE)
 ON CONFLICT (id) DO NOTHING;
+
+-- ENABLE REALTIME PUBLICATION FOR OPERATIONAL TABLES
+ALTER PUBLICATION supabase_realtime ADD TABLE telemetry, helmets, alerts, zone_assignments;
+

@@ -207,3 +207,10 @@ CREATE POLICY "Workers read own alerts" ON alerts FOR SELECT USING (auth.current
 -- Audit logs policies
 CREATE POLICY "Admins read audit logs" ON audit_logs FOR SELECT USING (auth.current_profile_role() = 'ADMIN');
 CREATE POLICY "Authenticated insert audit logs" ON audit_logs FOR INSERT WITH CHECK (true);
+
+-- ====================================================================
+-- 8. SUPABASE REALTIME REPLICATION PUBLICATION
+-- ====================================================================
+-- Publish changes for authoritative operational tables
+ALTER PUBLICATION supabase_realtime ADD TABLE telemetry, helmets, alerts, zone_assignments;
+
