@@ -362,8 +362,8 @@ export class DatabaseRepository {
     }
 
     list.push(telemetry);
-    // Maintain rolling buffer of 200 points per helmet
-    if (list.length > 200) {
+    // Maintain rolling buffer of 2000 points per helmet
+    if (list.length > 2000) {
       list.shift();
     }
 
@@ -400,6 +400,89 @@ export class DatabaseRepository {
   public getTelemetryHistory(helmetId: string, limit: number = 50): DbTelemetry[] {
     const list = this.telemetryStore.get(helmetId) || [];
     return list.slice(-limit);
+  }
+
+  public getTelemetryByRange(filter: {
+    from: string;
+    to: string;
+    helmetId?: string;
+    helmetIds?: string[];
+  }): DbTelemetry[] {
+    const fromMs = new Date(filter.from).getTime();
+    const toMs = new Date(filter.to).getTime();
+
+    let targetHelmets: string[] = [];
+    if (filter.helmetId) {
+      targetHelmets = [filter.helmetId];
+    } else if (filter.helmetIds && filter.helmetIds.length > 0) {
+      targetHelmets = filter.helmetIds;
+    } else {
+      targetHelmets = Array.from(this.telemetryStore.keys());
+    }
+
+    const results: DbTelemetry[] = [];
+    targetHelmets.forEach((hid) => {
+      const list = this.telemetryStore.get(hid) || [];
+      list.forEach((p) => {
+        const t = new Date(p.timestamp).getTime();
+        if (t >= fromMs && t <= toMs) {
+          results.push(p);
+        }
+      });
+    });
+
+    return results.sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+  }
+
+  public getAlertsByRange(filter: {
+    from: string;
+    to: string;
+    helmetId?: string;
+    workerId?: string;
+    zoneId?: string;
+  }): DbAlert[] {
+    const fromMs = new Date(filter.from).getTime();
+    const toMs = new Date(filter.to).getTime();
+
+    return this.alertsStore.filter((a) => {
+      const trigMs = new Date(a.triggered_at).getTime();
+      const resolvedMs = a.resolved_at ? new Date(a.resolved_at).getTime() : Infinity;
+      const overlaps = trigMs <= toMs && resolvedMs >= fromMs;
+      if (!overlaps) return false;
+
+      if (filter.helmetId && a.helmet_id !== filter.helmetId) return false;
+      if (filter.workerId && a.worker_id !== filter.workerId) return false;
+      return true;
+    });
+  }
+
+  public getZoneAssignmentsByRange(filter: {
+    from: string;
+    to: string;
+    workerId?: string;
+    zoneId?: string;
+  }): DbZoneAssignment[] {
+    const fromMs = new Date(filter.from).getTime();
+    const toMs = new Date(filter.to).getTime();
+
+    return this.zoneAssignments.filter((za) => {
+      const checkInMs = new Date(za.checked_in_at).getTime();
+      const checkOutMs = za.checked_out_at ? new Date(za.checked_out_at).getTime() : Infinity;
+      const overlaps = checkInMs <= toMs && checkOutMs >= fromMs;
+      if (!overlaps) return false;
+
+      if (filter.workerId && za.worker_id !== filter.workerId) return false;
+      if (
+        filter.zoneId &&
+        za.zone_id !== filter.zoneId &&
+        za.zone_id !== filter.zoneId.replace(/^zone-/, '')
+      ) {
+        return false;
+      }
+      return true;
+    });
   }
 
   // ==================== ALERTS ====================

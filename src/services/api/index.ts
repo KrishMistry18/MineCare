@@ -10,3 +10,4 @@ export * from './alertService';
 export * from './telemetryService';
 export * from './systemService';
 export * from './authService';
+export * from './analyticsService';

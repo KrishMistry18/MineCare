@@ -20,6 +20,7 @@ import { AlertEngine } from './alerts/AlertEngine';
 import { OfflineEngine } from './offline/OfflineEngine';
 import { AuthManager } from './auth/AuthManager';
 import { RealtimePublisher } from './realtime/RealtimePublisher';
+import { AnalyticsEngine, type AnalyticsOverviewResult } from './analytics/AnalyticsEngine';
 import type { DbTelemetry, UserRole, DbUserProfile } from './types';
 
 export class BackendApp {
@@ -908,6 +909,255 @@ export class BackendApp {
           this.sendJson(res, 200, alert);
         }
         return true;
+      }
+
+      // =========================================================================
+      // 10. ANALYTICS & HISTORICAL INTELLIGENCE (/api/v1/analytics/*)
+      // =========================================================================
+      if (pathname.startsWith('/api/v1/analytics/')) {
+        if (!currentUser) {
+          this.sendJson(res, 401, { error: 'Unauthorized: Authentication required for analytics' });
+          return true;
+        }
+
+        const fromParam = url.searchParams.get('from');
+        const toParam = url.searchParams.get('to');
+        const helmetIdParam = url.searchParams.get('helmetId');
+        const workerIdParam = url.searchParams.get('workerId');
+        const zoneIdParam = url.searchParams.get('zoneId');
+
+        const range = AnalyticsEngine.validateTimeRange(fromParam, toParam);
+        if (!range.valid || !range.from || !range.to || !range.fromMs || !range.toMs) {
+          this.sendJson(res, 400, { error: range.error || 'Invalid time range parameters' });
+          return true;
+        }
+
+        let userAssignedHelmetId: string | null = null;
+        if (currentUser.role === 'WORKER' && currentUser.worker_id) {
+          const h = this.db.getHelmets().find((hlm) => hlm.worker_id === currentUser.worker_id);
+          userAssignedHelmetId = h ? h.id : null;
+        }
+
+        // --- GET /api/v1/analytics/helmets/:id ---
+        const helmetAnalyticsMatch = pathname.match(/^\/api\/v1\/analytics\/helmets\/([^/]+)$/);
+        if (helmetAnalyticsMatch && method === 'GET') {
+          const targetHelmetId = helmetAnalyticsMatch[1];
+          if (currentUser.role === 'WORKER' && userAssignedHelmetId && targetHelmetId !== userAssignedHelmetId) {
+            this.sendJson(res, 403, { error: 'Forbidden: Workers may only inspect their assigned helmet analytics' });
+            return true;
+          }
+
+          const helmet = this.db.getHelmetWithDetails(targetHelmetId);
+          if (!helmet) {
+            this.sendJson(res, 404, { error: `Helmet ${targetHelmetId} not found` });
+            return true;
+          }
+
+          const packets = this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
+          const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
+          const alerts = this.db.getAlertsByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
+          const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
+          const assignments = this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, workerId: helmet.worker_id || undefined });
+
+          this.sendJson(res, 200, {
+            helmet,
+            timeRange: { from: range.from, to: range.to },
+            telemetry: telemetryAnalytics,
+            alerts: alertAnalytics,
+            zoneHistory: assignments,
+          });
+          return true;
+        }
+
+        // --- GET /api/v1/analytics/workers/:id ---
+        const workerAnalyticsMatch = pathname.match(/^\/api\/v1\/analytics\/workers\/([^/]+)$/);
+        if (workerAnalyticsMatch && method === 'GET') {
+          const targetWorkerId = workerAnalyticsMatch[1];
+          if (currentUser.role === 'WORKER' && targetWorkerId !== currentUser.worker_id) {
+            this.sendJson(res, 403, { error: 'Forbidden: Workers may only inspect their own worker analytics' });
+            return true;
+          }
+
+          const worker = this.db.getWorker(targetWorkerId);
+          if (!worker) {
+            this.sendJson(res, 404, { error: `Worker ${targetWorkerId} not found` });
+            return true;
+          }
+
+          const assignedHelmet = this.db.getHelmets().find((h) => h.worker_id === worker.id);
+          const packets = assignedHelmet
+            ? this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: assignedHelmet.id })
+            : [];
+          const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
+          const alerts = this.db.getAlertsByRange({ from: range.from, to: range.to, workerId: worker.id });
+          const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
+          const assignments = this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, workerId: worker.id });
+
+          this.sendJson(res, 200, {
+            worker,
+            assignedHelmet: assignedHelmet || null,
+            timeRange: { from: range.from, to: range.to },
+            telemetry: telemetryAnalytics,
+            alerts: alertAnalytics,
+            zoneHistory: assignments,
+          });
+          return true;
+        }
+
+        // Verify RBAC for general analytics queries
+        const rbac = AnalyticsEngine.verifyRbacAccess(
+          currentUser.role,
+          currentUser.worker_id,
+          userAssignedHelmetId,
+          workerIdParam,
+          helmetIdParam
+        );
+        if (!rbac.allowed) {
+          this.sendJson(res, 403, { error: rbac.error });
+          return true;
+        }
+
+        // Resolve helmets to include based on filters
+        let targetHelmetIds: string[] | undefined = undefined;
+        if (rbac.effectiveHelmetId) {
+          targetHelmetIds = [rbac.effectiveHelmetId];
+        } else if (rbac.effectiveWorkerId) {
+          const h = this.db.getHelmets().find((item) => item.worker_id === rbac.effectiveWorkerId);
+          targetHelmetIds = h ? [h.id] : [];
+        } else if (zoneIdParam) {
+          const zoneAssignments = this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, zoneId: zoneIdParam });
+          const wIds = new Set(zoneAssignments.map((a) => a.worker_id));
+          targetHelmetIds = this.db.getHelmets()
+            .filter((h) => h.worker_id && wIds.has(h.worker_id))
+            .map((h) => h.id);
+        }
+
+        // --- GET /api/v1/analytics/telemetry ---
+        if (pathname === '/api/v1/analytics/telemetry' && method === 'GET') {
+          const packets = this.db.getTelemetryByRange({
+            from: range.from,
+            to: range.to,
+            helmetIds: targetHelmetIds,
+          });
+          const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
+          this.sendJson(res, 200, telemetryAnalytics);
+          return true;
+        }
+
+        // --- GET /api/v1/analytics/alerts ---
+        if (pathname === '/api/v1/analytics/alerts' && method === 'GET') {
+          const alerts = this.db.getAlertsByRange({
+            from: range.from,
+            to: range.to,
+            helmetId: rbac.effectiveHelmetId,
+            workerId: rbac.effectiveWorkerId,
+            zoneId: zoneIdParam || undefined,
+          });
+          const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
+          this.sendJson(res, 200, alertAnalytics);
+          return true;
+        }
+
+        // --- GET /api/v1/analytics/zones ---
+        if (pathname === '/api/v1/analytics/zones' && method === 'GET') {
+          const zones = this.db.getZones();
+          const assignments = this.db.getZoneAssignmentsByRange({
+            from: range.from,
+            to: range.to,
+            workerId: rbac.effectiveWorkerId,
+          });
+          const alerts = this.db.getAlertsByRange({
+            from: range.from,
+            to: range.to,
+            workerId: rbac.effectiveWorkerId,
+          });
+          const workers = this.db.getWorkers();
+          const zoneAnalytics = AnalyticsEngine.computeZoneAnalytics(
+            zones,
+            assignments,
+            alerts,
+            workers,
+            range.fromMs,
+            range.toMs
+          );
+          this.sendJson(res, 200, zoneAnalytics);
+          return true;
+        }
+
+        // --- GET /api/v1/analytics/overview ---
+        if (pathname === '/api/v1/analytics/overview' && method === 'GET') {
+          const packets = this.db.getTelemetryByRange({
+            from: range.from,
+            to: range.to,
+            helmetIds: targetHelmetIds,
+          });
+          const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
+
+          const alerts = this.db.getAlertsByRange({
+            from: range.from,
+            to: range.to,
+            helmetId: rbac.effectiveHelmetId,
+            workerId: rbac.effectiveWorkerId,
+            zoneId: zoneIdParam || undefined,
+          });
+          const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
+
+          const zones = this.db.getZones();
+          const assignments = this.db.getZoneAssignmentsByRange({
+            from: range.from,
+            to: range.to,
+            workerId: rbac.effectiveWorkerId,
+          });
+          const workers = this.db.getWorkers();
+          const zoneAnalytics = AnalyticsEngine.computeZoneAnalytics(
+            zones,
+            assignments,
+            alerts,
+            workers,
+            range.fromMs,
+            range.toMs
+          );
+
+          const helmets = this.db.getRawHelmets();
+          const connectivityAnalytics = AnalyticsEngine.computeConnectivityAnalytics(
+            helmets,
+            alerts,
+            workers,
+            range.fromMs,
+            range.toMs
+          );
+
+          const overview: AnalyticsOverviewResult = {
+            timeRange: {
+              from: range.from,
+              to: range.to,
+              durationHours: Math.round((range.durationMs / (1000 * 3600)) * 10) / 10,
+            },
+            kpi: {
+              totalPackets: telemetryAnalytics.packetCount,
+              totalAlerts: alertAnalytics.totalAlerts,
+              activeAlerts: alertAnalytics.activeAlerts,
+              dangerEvents: telemetryAnalytics.safetyBreakdown?.dangerPackets || 0,
+              warningEvents: telemetryAnalytics.safetyBreakdown?.warningPackets || 0,
+              avgTemperature: telemetryAnalytics.metrics?.temperature.avg ?? null,
+              avgHumidity: telemetryAnalytics.metrics?.humidity.avg ?? null,
+              avgRawGas: telemetryAnalytics.metrics?.gas.avg ?? null,
+              offlineHelmetCount: connectivityAnalytics.currentFleetStatus.offline,
+            },
+            telemetry: telemetryAnalytics,
+            alerts: alertAnalytics,
+            zones: zoneAnalytics,
+            connectivity: connectivityAnalytics,
+            activeFilters: {
+              helmetId: rbac.effectiveHelmetId,
+              workerId: rbac.effectiveWorkerId,
+              zoneId: zoneIdParam || undefined,
+            },
+          };
+
+          this.sendJson(res, 200, overview);
+          return true;
+        }
       }
 
       // If route started with /api/v1/ but wasn't matched:
