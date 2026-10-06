@@ -52,7 +52,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
 
   const handleQuickFill = (demoEmail: string) => {
     setEmail(demoEmail);
-    setPassword('MineCare#2026!');
+    if (demoEmail.startsWith('admin')) {
+      setPassword('Admin#Password2026');
+    } else if (demoEmail.startsWith('supervisor') || demoEmail.startsWith('operator')) {
+      setPassword('Supervisor#Password2026');
+    } else {
+      setPassword('Worker#Password2026');
+    }
     setLocalError(null);
     clearError();
   };

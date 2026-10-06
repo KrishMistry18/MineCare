@@ -54,6 +54,14 @@ export class RealtimePublisher {
    */
   public static resetInstance(): void {
     if (RealtimePublisher.instance) {
+      for (const client of RealtimePublisher.instance.sseClients.values()) {
+        try {
+          client.res.write('event: shutdown\ndata: {"status":"SHUTDOWN"}\n\n');
+          client.res.end();
+        } catch {
+          // ignore closed socket error
+        }
+      }
       if (RealtimePublisher.instance.heartbeatTimer) {
         clearInterval(RealtimePublisher.instance.heartbeatTimer);
         RealtimePublisher.instance.heartbeatTimer = null;

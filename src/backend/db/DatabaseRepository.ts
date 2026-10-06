@@ -126,6 +126,17 @@ export class DatabaseRepository {
     // 5. Seed Canonical User Profiles
     const defaultProfiles: DbUserProfile[] = [
       {
+        id: 'PRF-000',
+        auth_user_id: 'auth-op-001',
+        name: 'Control Room Operator',
+        email: 'operator@minecare.local',
+        role: 'SUPERVISOR',
+        worker_id: null,
+        active: true,
+        created_at: now,
+        updated_at: now,
+      },
+      {
         id: 'PRF-001',
         auth_user_id: 'auth-admin-001',
         name: 'Admin Operator',
@@ -232,6 +243,14 @@ export class DatabaseRepository {
       assigned_zone_name: defaultZone?.name || 'Portal / Surface',
       current_work_zone_name: currentZone?.name || null,
     };
+  }
+
+  public updateWorker(id: string, updates: Partial<DbWorker>): DbWorker | null {
+    const worker = this.workers.get(id) || Array.from(this.workers.values()).find((w) => w.worker_code === id);
+    if (!worker) return null;
+    const updated = { ...worker, ...updates, updated_at: new Date().toISOString() };
+    this.workers.set(worker.id, updated);
+    return updated;
   }
 
   // ==================== HELMETS ====================
@@ -503,6 +522,40 @@ export class DatabaseRepository {
 
   public getAlertHistory(): DbAlert[] {
     return this.alertsStore.filter((a) => a.status === 'RESOLVED');
+  }
+
+  public getAlertsHistory(limit: number = 100): DbAlert[] {
+    return this.getAlertHistory().slice(0, limit);
+  }
+
+  public saveAlert(alert: DbAlert): DbAlert {
+    const existingIndex = this.alertsStore.findIndex((a) => a.id === alert.id);
+    if (existingIndex >= 0) {
+      this.alertsStore[existingIndex] = { ...this.alertsStore[existingIndex], ...alert };
+      return this.alertsStore[existingIndex];
+    }
+    this.alertsStore.unshift(alert);
+    return alert;
+  }
+
+  public acknowledgeAlert(id: string, supervisorName: string): DbAlert | null {
+    const alert = this.alertsStore.find((a) => a.id === id);
+    if (!alert) return null;
+    alert.status = 'ACKNOWLEDGED';
+    alert.acknowledged_at = new Date().toISOString();
+    alert.acknowledged_by = supervisorName;
+    alert.updated_at = new Date().toISOString();
+    return alert;
+  }
+
+  public resolveAlert(id: string, notes: string): DbAlert | null {
+    const alert = this.alertsStore.find((a) => a.id === id);
+    if (!alert) return null;
+    alert.status = 'RESOLVED';
+    alert.resolved_at = new Date().toISOString();
+    alert.supervisor_notes = notes;
+    alert.updated_at = new Date().toISOString();
+    return alert;
   }
 
   // ==================== PROFILES & AUTH ====================

@@ -19,6 +19,8 @@
  * 10. Rapid Ingestion Load & Buffer Stability
  */
 
+process.env.NODE_ENV = 'test';
+
 import { Socket } from 'net';
 import { IncomingMessage, ServerResponse } from 'http';
 import { DatabaseRepository } from '../src/backend/db/DatabaseRepository';
@@ -768,7 +770,9 @@ async function runPhase6Tests() {
   console.log('============================================================\n');
 
   if (totalChecks !== passedChecks) {
-    process.exitCode = 1;
+    process.exit(1);
+  } else {
+    process.exit(0);
   }
 }
 

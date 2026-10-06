@@ -3,6 +3,8 @@
  * Real-Time Operations, Live Telemetry, Stateful Simulation, and RBAC Delivery
  */
 
+process.env.NODE_ENV = 'test';
+
 import { DatabaseRepository } from '../src/backend/db/DatabaseRepository';
 import { SafetyEngine } from '../src/backend/safety/SafetyEngine';
 import { AlertEngine } from '../src/backend/alerts/AlertEngine';

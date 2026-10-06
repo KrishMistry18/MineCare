@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS zone_assignments (
     id TEXT PRIMARY KEY,
     worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     helmet_id TEXT NOT NULL REFERENCES helmets(id) ON DELETE CASCADE,
-    zone_id TEXT NOT NULL REFERENCES mine_zones(id) ON DELETE RESTRICT Loose,
+    zone_id TEXT NOT NULL REFERENCES mine_zones(id) ON DELETE RESTRICT,
     assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     checked_in_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     checked_out_at TIMESTAMPTZ,
@@ -160,13 +160,13 @@ ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 
--- Helper functions for RLS
-CREATE OR REPLACE FUNCTION auth.current_profile_role()
+-- Helper functions for RLS (defined in public schema to avoid touching managed auth schema)
+CREATE OR REPLACE FUNCTION public.current_profile_role()
 RETURNS TEXT AS $$
     SELECT role FROM profiles WHERE auth_user_id = auth.uid()::text LIMIT 1;
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
-CREATE OR REPLACE FUNCTION auth.current_worker_id()
+CREATE OR REPLACE FUNCTION public.current_worker_id()
 RETURNS TEXT AS $$
     SELECT worker_id FROM profiles WHERE auth_user_id = auth.uid()::text LIMIT 1;
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
@@ -175,37 +175,37 @@ $$ LANGUAGE sql STABLE SECURITY DEFINER;
 CREATE POLICY "Public read mine_zones" ON mine_zones FOR SELECT USING (true);
 
 -- Profiles policies
-CREATE POLICY "Admins full access to profiles" ON profiles FOR ALL USING (auth.current_profile_role() = 'ADMIN');
+CREATE POLICY "Admins full access to profiles" ON profiles FOR ALL USING (public.current_profile_role() = 'ADMIN');
 CREATE POLICY "Users read own profile" ON profiles FOR SELECT USING (auth.uid()::text = auth_user_id);
-CREATE POLICY "Supervisors read profiles" ON profiles FOR SELECT USING (auth.current_profile_role() = 'SUPERVISOR');
+CREATE POLICY "Supervisors read profiles" ON profiles FOR SELECT USING (public.current_profile_role() = 'SUPERVISOR');
 
 -- Workers policies
-CREATE POLICY "Admins and Supervisors read workers" ON workers FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
-CREATE POLICY "Workers read own worker record" ON workers FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND id = auth.current_worker_id());
-CREATE POLICY "Admins write workers" ON workers FOR ALL USING (auth.current_profile_role() = 'ADMIN');
+CREATE POLICY "Admins and Supervisors read workers" ON workers FOR SELECT USING (public.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read own worker record" ON workers FOR SELECT USING (public.current_profile_role() = 'WORKER' AND id = public.current_worker_id());
+CREATE POLICY "Admins write workers" ON workers FOR ALL USING (public.current_profile_role() = 'ADMIN');
 
 -- Helmets policies
-CREATE POLICY "Admins and Supervisors read helmets" ON helmets FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
-CREATE POLICY "Workers read assigned helmet" ON helmets FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
-CREATE POLICY "Admins manage helmets" ON helmets FOR ALL USING (auth.current_profile_role() = 'ADMIN');
+CREATE POLICY "Admins and Supervisors read helmets" ON helmets FOR SELECT USING (public.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read assigned helmet" ON helmets FOR SELECT USING (public.current_profile_role() = 'WORKER' AND worker_id = public.current_worker_id());
+CREATE POLICY "Admins manage helmets" ON helmets FOR ALL USING (public.current_profile_role() = 'ADMIN');
 
 -- Zone assignments policies
-CREATE POLICY "Admins and Supervisors read zone assignments" ON zone_assignments FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
-CREATE POLICY "Workers read own zone assignments" ON zone_assignments FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
-CREATE POLICY "Supervisors and Admins manage zone assignments" ON zone_assignments FOR ALL USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
-CREATE POLICY "Workers self check-in" ON zone_assignments FOR INSERT WITH CHECK (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
+CREATE POLICY "Admins and Supervisors read zone assignments" ON zone_assignments FOR SELECT USING (public.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read own zone assignments" ON zone_assignments FOR SELECT USING (public.current_profile_role() = 'WORKER' AND worker_id = public.current_worker_id());
+CREATE POLICY "Supervisors and Admins manage zone assignments" ON zone_assignments FOR ALL USING (public.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers self check-in" ON zone_assignments FOR INSERT WITH CHECK (public.current_profile_role() = 'WORKER' AND worker_id = public.current_worker_id());
 
 -- Telemetry policies
-CREATE POLICY "Admins and Supervisors read telemetry" ON telemetry FOR SELECT USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
-CREATE POLICY "Workers read assigned helmet telemetry" ON telemetry FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND helmet_id IN (SELECT id FROM helmets WHERE worker_id = auth.current_worker_id()));
+CREATE POLICY "Admins and Supervisors read telemetry" ON telemetry FOR SELECT USING (public.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read assigned helmet telemetry" ON telemetry FOR SELECT USING (public.current_profile_role() = 'WORKER' AND helmet_id IN (SELECT id FROM helmets WHERE worker_id = public.current_worker_id()));
 CREATE POLICY "Service write telemetry" ON telemetry FOR INSERT WITH CHECK (true);
 
 -- Alerts policies
-CREATE POLICY "Admins and Supervisors manage alerts" ON alerts FOR ALL USING (auth.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
-CREATE POLICY "Workers read own alerts" ON alerts FOR SELECT USING (auth.current_profile_role() = 'WORKER' AND worker_id = auth.current_worker_id());
+CREATE POLICY "Admins and Supervisors manage alerts" ON alerts FOR ALL USING (public.current_profile_role() IN ('ADMIN', 'SUPERVISOR'));
+CREATE POLICY "Workers read own alerts" ON alerts FOR SELECT USING (public.current_profile_role() = 'WORKER' AND worker_id = public.current_worker_id());
 
 -- Audit logs policies
-CREATE POLICY "Admins read audit logs" ON audit_logs FOR SELECT USING (auth.current_profile_role() = 'ADMIN');
+CREATE POLICY "Admins read audit logs" ON audit_logs FOR SELECT USING (public.current_profile_role() = 'ADMIN');
 CREATE POLICY "Authenticated insert audit logs" ON audit_logs FOR INSERT WITH CHECK (true);
 
 -- ====================================================================

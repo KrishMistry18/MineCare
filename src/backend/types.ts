@@ -93,6 +93,7 @@ export interface DbZoneAssignment {
 export interface DbTelemetry {
   id: string;
   helmet_id: string;
+  worker_id?: string | null;
   timestamp: string;
   sequence_number: number;
   temperature: number;

@@ -3,6 +3,8 @@
  * Analytics, Historical Intelligence, Time Range Validation, Aggregations, & RBAC
  */
 
+process.env.NODE_ENV = 'test';
+
 import { DatabaseRepository } from '../src/backend/db/DatabaseRepository';
 import { AnalyticsEngine } from '../src/backend/analytics/AnalyticsEngine';
 import { BackendApp } from '../src/backend/app';

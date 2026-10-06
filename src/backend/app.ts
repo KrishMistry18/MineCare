@@ -10,9 +10,12 @@
  * - Mine Zones & Occupancy
  * - Alerts Management & Lifecycle (Supervisor/Admin ack & resolve)
  * - System Health Diagnostics
+ * - Analytics & Historical Intelligence (/api/v1/analytics/*)
  */
 
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { IDatabaseRepository } from './db/repositories/interfaces';
+import { PostgresDatabaseRepository } from './db/repositories/PostgresDatabaseRepository';
 import { DatabaseRepository } from './db/DatabaseRepository';
 import { TelemetryValidator } from './validation/TelemetryValidator';
 import { SafetyEngine } from './safety/SafetyEngine';
@@ -22,53 +25,88 @@ import { AuthManager } from './auth/AuthManager';
 import { RealtimePublisher } from './realtime/RealtimePublisher';
 import { AnalyticsEngine, type AnalyticsOverviewResult } from './analytics/AnalyticsEngine';
 import type { DbTelemetry, UserRole, DbUserProfile } from './types';
+import { getBackendConfig } from './config/env';
+import { StructuredLogger } from './security/StructuredLogger';
+import { RequestIdManager } from './security/RequestId';
 
 export class BackendApp {
   private static instance: BackendApp | null = null;
-  private db: DatabaseRepository;
+  private db: IDatabaseRepository;
   private authManager: AuthManager;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
-  private constructor() {
-    this.db = DatabaseRepository.getInstance();
-    this.authManager = AuthManager.getInstance();
+  private constructor(customDb?: IDatabaseRepository) {
+    const config = getBackendConfig();
+
+    if (customDb) {
+      this.db = customDb;
+    } else if (config.isProduction || (config.databaseUrl && !config.isTest)) {
+      this.db = PostgresDatabaseRepository.getInstance();
+    } else {
+      // In development / testing without external DB URL, use in-memory DatabaseRepository test double
+      this.db = DatabaseRepository.getInstance() as unknown as IDatabaseRepository;
+    }
+
+    this.authManager = AuthManager.getInstance(this.db);
 
     // Check offline heartbeats every 3 seconds
     if (typeof setInterval !== 'undefined') {
-      const timer = setInterval(() => {
-        const helmets = this.db.getRawHelmets();
-        const alerts = this.db.getAlertsStore();
-        const { statusChanges, newAlerts, resolvedAlerts } = OfflineEngine.checkFleetHeartbeats(helmets, alerts);
+      this.heartbeatTimer = setInterval(async () => {
+        try {
+          const helmets = await this.db.getRawHelmets();
+          const alerts = await this.db.getAlertsStore();
+          const { statusChanges, newAlerts, resolvedAlerts } = OfflineEngine.checkFleetHeartbeats(helmets, alerts);
 
-        statusChanges.forEach((sc) => {
-          const helmet = this.db.getHelmetWithDetails(sc.helmetId);
-          if (helmet) {
-            RealtimePublisher.getInstance().publish('helmets', 'UPDATE', helmet);
+          for (const sc of statusChanges) {
+            const helmet = await this.db.getHelmetWithDetails(sc.helmetId);
+            if (helmet) {
+              RealtimePublisher.getInstance().publish('helmets', 'UPDATE', helmet);
+            }
           }
-        });
 
-        newAlerts.forEach((alert) => {
-          RealtimePublisher.getInstance().publish('alerts', 'INSERT', alert);
-        });
+          for (const alert of newAlerts) {
+            await this.db.saveAlert(alert);
+            RealtimePublisher.getInstance().publish('alerts', 'INSERT', alert);
+          }
 
-        resolvedAlerts.forEach((alert) => {
-          RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
-        });
+          for (const alert of resolvedAlerts) {
+            await this.db.resolveAlert(alert.id, alert.supervisor_notes || 'Auto-resolved: Heartbeat re-established');
+            RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
+          }
+        } catch {
+          // ignore background heartbeat error
+        }
       }, 3000);
-      if (typeof timer.unref === 'function') {
-        timer.unref();
+
+      if (typeof this.heartbeatTimer.unref === 'function') {
+        this.heartbeatTimer.unref();
       }
     }
-
   }
 
-  public static getInstance(): BackendApp {
+  public static getInstance(customDb?: IDatabaseRepository): BackendApp {
     if (!BackendApp.instance) {
-      BackendApp.instance = new BackendApp();
+      BackendApp.instance = new BackendApp(customDb);
+    } else if (customDb) {
+      BackendApp.instance.setDb(customDb);
     }
     return BackendApp.instance;
   }
 
-  public getDb(): DatabaseRepository {
+  public static resetInstance(): void {
+    if (BackendApp.instance?.heartbeatTimer) {
+      clearInterval(BackendApp.instance.heartbeatTimer);
+    }
+    AuthManager.resetInstance();
+    BackendApp.instance = null;
+  }
+
+  public setDb(db: IDatabaseRepository): void {
+    this.db = db;
+    this.authManager.setDb(db);
+  }
+
+  public getDb(): IDatabaseRepository {
     return this.db;
   }
 
@@ -98,7 +136,6 @@ export class BackendApp {
       }
       res.setHeader('Vary', 'Origin');
     } else {
-      // Safe local development fallback
       allowedOrigin = requestOrigin || '*';
     }
 
@@ -124,8 +161,12 @@ export class BackendApp {
       // POST /api/v1/auth/login
       if (pathname === '/api/v1/auth/login' && method === 'POST') {
         const body = await this.readJsonBody(req);
-        const email = String(body.email || '');
-        const password = String(body.password || '');
+        if (body._malformed) {
+          this.sendJson(res, 401, { error: 'Invalid or malformed request payload' });
+          return true;
+        }
+        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        const password = typeof body.password === 'string' ? body.password : '';
         const authResult = await this.authManager.login(email, password);
 
         if ('error' in authResult) {
@@ -150,7 +191,7 @@ export class BackendApp {
           authHeader.replace(/^Bearer\s+/i, '').trim();
 
         if (token) {
-          this.authManager.logout(token);
+          await this.authManager.logout(token);
         }
         this.sendJson(res, 200, { success: true, message: 'Logged out successfully' });
         return true;
@@ -158,7 +199,7 @@ export class BackendApp {
 
       // GET /api/v1/auth/session
       if (pathname === '/api/v1/auth/session' && method === 'GET') {
-        const user = this.authManager.authenticateRequest(req);
+        const user = await this.authManager.authenticateRequest(req);
         if (!user) {
           this.sendJson(res, 401, { error: 'Unauthorized or session expired' });
         } else {
@@ -217,23 +258,31 @@ export class BackendApp {
           created_at: new Date().toISOString(),
         };
 
-        this.db.saveTelemetry(telemetryRecord);
+        await this.db.saveTelemetry(telemetryRecord);
 
         // Authoritative Alert Lifecycle
-        const helmet = this.db.getHelmet(packet.helmetId);
+        const helmet = await this.db.getHelmet(packet.helmetId);
+        const existingAlerts = await this.db.getAlertsStore();
         const alertResult = AlertEngine.processAlerts(
-          this.db.getAlertsStore(),
+          existingAlerts,
           packet.helmetId,
           helmet?.worker_id || null,
           packet,
           safety
         );
 
+        if (alertResult.createdAlert) {
+          await this.db.saveAlert(alertResult.createdAlert);
+        }
+        for (const resolved of alertResult.resolvedAlerts) {
+          await this.db.resolveAlert(resolved.id, resolved.supervisor_notes || 'Auto-resolved');
+        }
+
         // Realtime Broadcast (Authoritative Database Changes)
         const publisher = RealtimePublisher.getInstance();
         publisher.publish('telemetry', 'INSERT', telemetryRecord);
 
-        const updatedHelmet = this.db.getHelmetWithDetails(packet.helmetId);
+        const updatedHelmet = await this.db.getHelmetWithDetails(packet.helmetId);
         if (updatedHelmet) {
           publisher.publish('helmets', 'UPDATE', updatedHelmet);
         }
@@ -265,7 +314,7 @@ export class BackendApp {
       // 3. SYSTEM HEALTH (Public Diagnostics)
       // =========================================================================
       if (pathname === '/api/v1/system/health' && method === 'GET') {
-        const health = this.db.getSystemHealth();
+        const health = await this.db.getSystemHealth();
         this.sendJson(res, 200, health);
         return true;
       }
@@ -273,7 +322,7 @@ export class BackendApp {
       // =========================================================================
       // 4. AUTHENTICATION & AUTHORIZATION ENFORCEMENT
       // =========================================================================
-      const currentUser = this.authManager.authenticateRequest(req);
+      const currentUser = await this.authManager.authenticateRequest(req);
 
       // =========================================================================
       // REALTIME STREAM (/api/v1/realtime/stream - SSE with RBAC Isolation)
@@ -292,7 +341,8 @@ export class BackendApp {
 
         let assignedHelmetId: string | null = null;
         if (currentUser.role === 'WORKER' && currentUser.worker_id) {
-          const h = this.db.getHelmets().find((hlm) => hlm.worker_id === currentUser.worker_id);
+          const helmets = await this.db.getHelmets();
+          const h = helmets.find((hlm) => hlm.worker_id === currentUser.worker_id);
           assignedHelmetId = h ? h.id : null;
         }
 
@@ -326,7 +376,7 @@ export class BackendApp {
 
         // GET /api/v1/admin/users
         if (pathname === '/api/v1/admin/users' && method === 'GET') {
-          const profiles = this.db.getAllProfiles();
+          const profiles = await this.db.getAllProfiles();
           this.sendJson(res, 200, profiles);
           return true;
         }
@@ -348,7 +398,7 @@ export class BackendApp {
             return true;
           }
 
-          const existing = this.db.getProfileByEmail(email);
+          const existing = await this.db.getProfileByEmail(email);
           if (existing) {
             this.sendJson(res, 409, { error: `User with email ${email} already exists` });
             return true;
@@ -366,9 +416,8 @@ export class BackendApp {
             updated_at: new Date().toISOString(),
           };
 
-
-          this.db.createProfile(newProfile);
-          this.db.logAuditAction({
+          await this.db.createProfile(newProfile);
+          await this.db.logAuditAction({
             user_id: currentUser.id,
             user_email: currentUser.email,
             role: currentUser.role,
@@ -394,20 +443,19 @@ export class BackendApp {
             return true;
           }
 
-          const existing = this.db.getProfile(targetUserId);
+          const existing = await this.db.getProfile(targetUserId);
           if (!existing) {
             this.sendJson(res, 404, { error: `User profile ${targetUserId} not found` });
             return true;
           }
 
           const oldRole = existing.role;
-          const updated = this.db.updateProfile(targetUserId, {
+          const updated = await this.db.updateProfile(targetUserId, {
             role: newRole,
             worker_id: newRole === 'WORKER' ? (existing.worker_id ?? null) : null,
           });
 
-
-          this.db.logAuditAction({
+          await this.db.logAuditAction({
             user_id: currentUser.id,
             user_email: currentUser.email,
             role: currentUser.role,
@@ -424,7 +472,7 @@ export class BackendApp {
         // GET /api/v1/admin/audit-logs
         if (pathname === '/api/v1/admin/audit-logs' && method === 'GET') {
           const limit = Number(url.searchParams.get('limit') || 100);
-          const logs = this.db.getAuditLogs(limit);
+          const logs = await this.db.getAuditLogs(limit);
           this.sendJson(res, 200, logs);
           return true;
         }
@@ -449,7 +497,7 @@ export class BackendApp {
 
       // GET /api/v1/helmets
       if (pathname === '/api/v1/helmets' && method === 'GET') {
-        const allHelmets = this.db.getHelmets();
+        const allHelmets = await this.db.getHelmets();
         if (currentUser.role === 'WORKER') {
           const workerHelmet = allHelmets.filter((h) => h.worker_id === currentUser.worker_id);
           this.sendJson(res, 200, workerHelmet);
@@ -463,7 +511,8 @@ export class BackendApp {
       const helmetLatestMatch = pathname.match(/^\/api\/v1\/helmets\/([^/]+)\/latest$/);
       if (helmetLatestMatch && method === 'GET') {
         const helmetId = helmetLatestMatch[1];
-        const helmet = this.db.getHelmets().find((h) => h.id === helmetId || h.helmet_code === helmetId);
+        const allHelmets = await this.db.getHelmets();
+        const helmet = allHelmets.find((h) => h.id === helmetId || h.helmet_code === helmetId);
 
         if (!helmet) {
           this.sendJson(res, 404, { error: `No telemetry recorded for helmet ${helmetId}` });
@@ -475,7 +524,7 @@ export class BackendApp {
           return true;
         }
 
-        const latest = this.db.getLatestTelemetry(helmet.id);
+        const latest = await this.db.getLatestTelemetry(helmet.id);
         if (!latest) {
           this.sendJson(res, 404, { error: `No telemetry recorded for helmet ${helmetId}` });
         } else {
@@ -488,7 +537,8 @@ export class BackendApp {
       const helmetHistoryMatch = pathname.match(/^\/api\/v1\/helmets\/([^/]+)\/history$/);
       if (helmetHistoryMatch && method === 'GET') {
         const helmetId = helmetHistoryMatch[1];
-        const helmet = this.db.getHelmets().find((h) => h.id === helmetId || h.helmet_code === helmetId);
+        const allHelmets = await this.db.getHelmets();
+        const helmet = allHelmets.find((h) => h.id === helmetId || h.helmet_code === helmetId);
 
         if (!helmet) {
           this.sendJson(res, 404, { error: `Helmet ${helmetId} not found` });
@@ -501,7 +551,7 @@ export class BackendApp {
         }
 
         const limit = Number(url.searchParams.get('limit') || 50);
-        const history = this.db.getTelemetryHistory(helmet.id, limit);
+        const history = await this.db.getTelemetryHistory(helmet.id, limit);
         this.sendJson(res, 200, history);
         return true;
       }
@@ -510,7 +560,8 @@ export class BackendApp {
       const helmetMatch = pathname.match(/^\/api\/v1\/helmets\/([^/]+)$/);
       if (helmetMatch && method === 'GET') {
         const helmetId = helmetMatch[1];
-        const helmet = this.db.getHelmets().find((h) => h.id === helmetId || h.helmet_code === helmetId);
+        const allHelmets = await this.db.getHelmets();
+        const helmet = allHelmets.find((h) => h.id === helmetId || h.helmet_code === helmetId);
 
         if (!helmet) {
           this.sendJson(res, 404, { error: `Helmet ${helmetId} not found` });
@@ -533,10 +584,10 @@ export class BackendApp {
       // GET /api/v1/workers
       if (pathname === '/api/v1/workers' && method === 'GET') {
         if (currentUser.role === 'WORKER') {
-          const selfWorker = currentUser.worker_id ? this.db.getWorker(currentUser.worker_id) : undefined;
+          const selfWorker = currentUser.worker_id ? await this.db.getWorker(currentUser.worker_id) : undefined;
           this.sendJson(res, 200, selfWorker ? [selfWorker] : []);
         } else {
-          const workers = this.db.getWorkers();
+          const workers = await this.db.getWorkers();
           this.sendJson(res, 200, workers);
         }
         return true;
@@ -552,7 +603,7 @@ export class BackendApp {
           return true;
         }
 
-        const worker = this.db.getWorker(workerId);
+        const worker = await this.db.getWorker(workerId);
         if (!worker) {
           this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
         } else {
@@ -573,23 +624,24 @@ export class BackendApp {
         }
 
         const body = await this.readJsonBody(req);
-        const worker = this.db.getWorker(workerId);
+        const worker = await this.db.getWorker(workerId);
 
         if (!worker) {
           this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
           return true;
         }
 
-        const helmet = this.db.getHelmets().find((h) => h.worker_id === worker.id);
+        const allHelmets = await this.db.getHelmets();
+        const helmet = allHelmets.find((h) => h.worker_id === worker.id);
         const targetZoneId = String(body.zoneId || body.zoneName || 'portal-surface');
-        const zone = this.db.getZone(targetZoneId);
+        const zone = await this.db.getZone(targetZoneId);
 
         if (!zone) {
           this.sendJson(res, 400, { error: `Zone ${targetZoneId} not found` });
           return true;
         }
 
-        const assignment = this.db.createZoneAssignment(
+        const assignment = await this.db.createZoneAssignment(
           worker.id,
           helmet?.id || 'MC-001',
           zone.id,
@@ -599,11 +651,11 @@ export class BackendApp {
         // Realtime Broadcast
         RealtimePublisher.getInstance().publish('zone_assignments', 'INSERT', assignment);
         if (helmet) {
-          const updatedHelmet = this.db.getHelmetWithDetails(helmet.id);
+          const updatedHelmet = await this.db.getHelmetWithDetails(helmet.id);
           if (updatedHelmet) RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
         }
 
-        this.db.logAuditAction({
+        await this.db.logAuditAction({
           user_id: currentUser.id,
           user_email: currentUser.email,
           role: currentUser.role,
@@ -632,14 +684,15 @@ export class BackendApp {
           return true;
         }
 
-        const worker = this.db.getWorker(workerId);
+        const worker = await this.db.getWorker(workerId);
         if (!worker) {
           this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
           return true;
         }
 
-        const checkedOut = this.db.checkOutWorker(worker.id);
-        const helmet = this.db.getHelmets().find((h) => h.worker_id === worker.id);
+        const checkedOut = await this.db.checkOutWorker(worker.id);
+        const allHelmets = await this.db.getHelmets();
+        const helmet = allHelmets.find((h) => h.worker_id === worker.id);
 
         // Realtime Broadcast
         RealtimePublisher.getInstance().publish('zone_assignments', 'UPDATE', {
@@ -649,11 +702,11 @@ export class BackendApp {
           checked_out_at: new Date().toISOString(),
         });
         if (helmet) {
-          const updatedHelmet = this.db.getHelmetWithDetails(helmet.id);
+          const updatedHelmet = await this.db.getHelmetWithDetails(helmet.id);
           if (updatedHelmet) RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
         }
 
-        this.db.logAuditAction({
+        await this.db.logAuditAction({
           user_id: currentUser.id,
           user_email: currentUser.email,
           role: currentUser.role,
@@ -681,23 +734,24 @@ export class BackendApp {
 
         const workerId = workerZoneMatch[1];
         const body = await this.readJsonBody(req);
-        const worker = this.db.getWorker(workerId);
+        const worker = await this.db.getWorker(workerId);
 
         if (!worker) {
           this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
           return true;
         }
 
-        const helmet = this.db.getHelmets().find((h) => h.worker_id === worker.id);
+        const allHelmets = await this.db.getHelmets();
+        const helmet = allHelmets.find((h) => h.worker_id === worker.id);
         const targetZoneId = String(body.zoneId || body.zoneName || '');
-        const zone = this.db.getZone(targetZoneId);
+        const zone = await this.db.getZone(targetZoneId);
 
         if (!zone) {
           this.sendJson(res, 400, { error: `Zone ${targetZoneId} not found` });
           return true;
         }
 
-        const assignment = this.db.createZoneAssignment(
+        const assignment = await this.db.createZoneAssignment(
           worker.id,
           helmet?.id || 'MC-001',
           zone.id,
@@ -705,17 +759,17 @@ export class BackendApp {
         );
 
         if (body.updateDefault) {
-          worker.assigned_zone_id = zone.id;
+          await this.db.updateWorker(worker.id, { assigned_zone_id: zone.id });
         }
 
         // Realtime Broadcast
         RealtimePublisher.getInstance().publish('zone_assignments', 'INSERT', assignment);
         if (helmet) {
-          const updatedHelmet = this.db.getHelmetWithDetails(helmet.id);
+          const updatedHelmet = await this.db.getHelmetWithDetails(helmet.id);
           if (updatedHelmet) RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
         }
 
-        this.db.logAuditAction({
+        await this.db.logAuditAction({
           user_id: currentUser.id,
           user_email: currentUser.email,
           role: currentUser.role,
@@ -744,9 +798,9 @@ export class BackendApp {
 
       // GET /api/v1/zones
       if (pathname === '/api/v1/zones' && method === 'GET') {
-        const zones = this.db.getZones();
-        const helmets = this.db.getHelmets();
-        const workers = this.db.getWorkers();
+        const zones = await this.db.getZones();
+        const helmets = await this.db.getHelmets();
+        const workers = await this.db.getWorkers();
 
         const zoneSummaries = zones.map((z) => {
           const checkedInWorkers = workers.filter((w) => w.current_work_zone_name === z.name);
@@ -782,13 +836,14 @@ export class BackendApp {
       const zoneWorkersMatch = pathname.match(/^\/api\/v1\/zones\/([^/]+)\/workers$/);
       if (zoneWorkersMatch && method === 'GET') {
         const zoneId = zoneWorkersMatch[1];
-        const zone = this.db.getZone(zoneId);
+        const zone = await this.db.getZone(zoneId);
         if (!zone) {
           this.sendJson(res, 404, { error: `Zone ${zoneId} not found` });
           return true;
         }
 
-        let workers = this.db.getWorkers().filter((w) => w.current_work_zone_name === zone.name);
+        const allWorkers = await this.db.getWorkers();
+        let workers = allWorkers.filter((w) => w.current_work_zone_name === zone.name);
         if (currentUser.role === 'WORKER') {
           workers = workers.filter((w) => w.id === currentUser.worker_id);
         }
@@ -801,7 +856,7 @@ export class BackendApp {
       const zoneMatch = pathname.match(/^\/api\/v1\/zones\/([^/]+)$/);
       if (zoneMatch && method === 'GET') {
         const zoneId = zoneMatch[1];
-        const zone = this.db.getZone(zoneId);
+        const zone = await this.db.getZone(zoneId);
         if (!zone) {
           this.sendJson(res, 404, { error: `Zone ${zoneId} not found` });
         } else {
@@ -827,7 +882,7 @@ export class BackendApp {
             return true;
           }
           if (helmetId) {
-            const h = this.db.getHelmet(helmetId);
+            const h = await this.db.getHelmet(helmetId);
             if (h && h.worker_id && h.worker_id !== currentUser.worker_id) {
               this.sendJson(res, 403, { error: 'Forbidden: Workers cannot inspect other helmets alerts' });
               return true;
@@ -835,7 +890,7 @@ export class BackendApp {
           }
         }
 
-        let alerts = this.db.getAlerts({ status, severity, helmetId });
+        let alerts = await this.db.getAlerts({ status, severity, helmetId });
 
         if (currentUser.role === 'WORKER') {
           alerts = alerts.filter((a) => a.worker_id === currentUser.worker_id);
@@ -847,7 +902,7 @@ export class BackendApp {
 
       // GET /api/v1/alerts/active
       if (pathname === '/api/v1/alerts/active' && method === 'GET') {
-        let activeAlerts = this.db.getActiveAlerts();
+        let activeAlerts = await this.db.getActiveAlerts();
         if (currentUser.role === 'WORKER') {
           activeAlerts = activeAlerts.filter((a) => a.worker_id === currentUser.worker_id);
         }
@@ -857,7 +912,7 @@ export class BackendApp {
 
       // GET /api/v1/alerts/history
       if (pathname === '/api/v1/alerts/history' && method === 'GET') {
-        let historyAlerts = this.db.getAlertHistory();
+        let historyAlerts = await this.db.getAlertHistory();
         if (currentUser.role === 'WORKER') {
           historyAlerts = historyAlerts.filter((a) => a.worker_id === currentUser.worker_id);
         }
@@ -880,11 +935,7 @@ export class BackendApp {
             ? body.supervisorName
             : currentUser.name || 'Supervisor On-Duty';
 
-        const alert = AlertEngine.acknowledge(
-          this.db.getAlertsStore(),
-          alertId,
-          supervisorName
-        );
+        const alert = await this.db.acknowledgeAlert(alertId, supervisorName);
 
         if (!alert) {
           this.sendJson(res, 404, { error: `Alert ${alertId} not found` });
@@ -892,7 +943,7 @@ export class BackendApp {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
 
-          this.db.logAuditAction({
+          await this.db.logAuditAction({
             user_id: currentUser.id,
             user_email: currentUser.email,
             role: currentUser.role,
@@ -923,11 +974,7 @@ export class BackendApp {
             ? body.supervisorNotes
             : `Resolved by ${currentUser.name}`;
 
-        const alert = AlertEngine.resolve(
-          this.db.getAlertsStore(),
-          alertId,
-          notes
-        );
+        const alert = await this.db.resolveAlert(alertId, notes);
 
         if (!alert) {
           this.sendJson(res, 404, { error: `Alert ${alertId} not found` });
@@ -935,7 +982,7 @@ export class BackendApp {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
 
-          this.db.logAuditAction({
+          await this.db.logAuditAction({
             user_id: currentUser.id,
             user_email: currentUser.email,
             role: currentUser.role,
@@ -972,7 +1019,8 @@ export class BackendApp {
 
         let userAssignedHelmetId: string | null = null;
         if (currentUser.role === 'WORKER' && currentUser.worker_id) {
-          const h = this.db.getHelmets().find((hlm) => hlm.worker_id === currentUser.worker_id);
+          const helmets = await this.db.getHelmets();
+          const h = helmets.find((hlm) => hlm.worker_id === currentUser.worker_id);
           userAssignedHelmetId = h ? h.id : null;
         }
 
@@ -985,17 +1033,17 @@ export class BackendApp {
             return true;
           }
 
-          const helmet = this.db.getHelmetWithDetails(targetHelmetId);
+          const helmet = await this.db.getHelmetWithDetails(targetHelmetId);
           if (!helmet) {
             this.sendJson(res, 404, { error: `Helmet ${targetHelmetId} not found` });
             return true;
           }
 
-          const packets = this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
+          const packets = await this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
           const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
-          const alerts = this.db.getAlertsByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
+          const alerts = await this.db.getAlertsByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
           const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
-          const assignments = this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, workerId: helmet.worker_id || undefined });
+          const assignments = await this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, workerId: helmet.worker_id || undefined });
 
           this.sendJson(res, 200, {
             helmet,
@@ -1016,20 +1064,21 @@ export class BackendApp {
             return true;
           }
 
-          const worker = this.db.getWorker(targetWorkerId);
+          const worker = await this.db.getWorker(targetWorkerId);
           if (!worker) {
             this.sendJson(res, 404, { error: `Worker ${targetWorkerId} not found` });
             return true;
           }
 
-          const assignedHelmet = this.db.getHelmets().find((h) => h.worker_id === worker.id);
+          const allHelmets = await this.db.getHelmets();
+          const assignedHelmet = allHelmets.find((h) => h.worker_id === worker.id);
           const packets = assignedHelmet
-            ? this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: assignedHelmet.id })
+            ? await this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: assignedHelmet.id })
             : [];
           const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
-          const alerts = this.db.getAlertsByRange({ from: range.from, to: range.to, workerId: worker.id });
+          const alerts = await this.db.getAlertsByRange({ from: range.from, to: range.to, workerId: worker.id });
           const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
-          const assignments = this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, workerId: worker.id });
+          const assignments = await this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, workerId: worker.id });
 
           this.sendJson(res, 200, {
             worker,
@@ -1060,19 +1109,21 @@ export class BackendApp {
         if (rbac.effectiveHelmetId) {
           targetHelmetIds = [rbac.effectiveHelmetId];
         } else if (rbac.effectiveWorkerId) {
-          const h = this.db.getHelmets().find((item) => item.worker_id === rbac.effectiveWorkerId);
+          const allHelmets = await this.db.getHelmets();
+          const h = allHelmets.find((item) => item.worker_id === rbac.effectiveWorkerId);
           targetHelmetIds = h ? [h.id] : [];
         } else if (zoneIdParam) {
-          const zoneAssignments = this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, zoneId: zoneIdParam });
+          const zoneAssignments = await this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, zoneId: zoneIdParam });
           const wIds = new Set(zoneAssignments.map((a) => a.worker_id));
-          targetHelmetIds = this.db.getHelmets()
+          const allHelmets = await this.db.getHelmets();
+          targetHelmetIds = allHelmets
             .filter((h) => h.worker_id && wIds.has(h.worker_id))
             .map((h) => h.id);
         }
 
         // --- GET /api/v1/analytics/telemetry ---
         if (pathname === '/api/v1/analytics/telemetry' && method === 'GET') {
-          const packets = this.db.getTelemetryByRange({
+          const packets = await this.db.getTelemetryByRange({
             from: range.from,
             to: range.to,
             helmetIds: targetHelmetIds,
@@ -1084,7 +1135,7 @@ export class BackendApp {
 
         // --- GET /api/v1/analytics/alerts ---
         if (pathname === '/api/v1/analytics/alerts' && method === 'GET') {
-          const alerts = this.db.getAlertsByRange({
+          const alerts = await this.db.getAlertsByRange({
             from: range.from,
             to: range.to,
             helmetId: rbac.effectiveHelmetId,
@@ -1098,18 +1149,18 @@ export class BackendApp {
 
         // --- GET /api/v1/analytics/zones ---
         if (pathname === '/api/v1/analytics/zones' && method === 'GET') {
-          const zones = this.db.getZones();
-          const assignments = this.db.getZoneAssignmentsByRange({
+          const zones = await this.db.getZones();
+          const assignments = await this.db.getZoneAssignmentsByRange({
             from: range.from,
             to: range.to,
             workerId: rbac.effectiveWorkerId,
           });
-          const alerts = this.db.getAlertsByRange({
+          const alerts = await this.db.getAlertsByRange({
             from: range.from,
             to: range.to,
             workerId: rbac.effectiveWorkerId,
           });
-          const workers = this.db.getWorkers();
+          const workers = await this.db.getWorkers();
           const zoneAnalytics = AnalyticsEngine.computeZoneAnalytics(
             zones,
             assignments,
@@ -1124,14 +1175,14 @@ export class BackendApp {
 
         // --- GET /api/v1/analytics/overview ---
         if (pathname === '/api/v1/analytics/overview' && method === 'GET') {
-          const packets = this.db.getTelemetryByRange({
+          const packets = await this.db.getTelemetryByRange({
             from: range.from,
             to: range.to,
             helmetIds: targetHelmetIds,
           });
           const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
 
-          const alerts = this.db.getAlertsByRange({
+          const alerts = await this.db.getAlertsByRange({
             from: range.from,
             to: range.to,
             helmetId: rbac.effectiveHelmetId,
@@ -1140,13 +1191,13 @@ export class BackendApp {
           });
           const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
 
-          const zones = this.db.getZones();
-          const assignments = this.db.getZoneAssignmentsByRange({
+          const zones = await this.db.getZones();
+          const assignments = await this.db.getZoneAssignmentsByRange({
             from: range.from,
             to: range.to,
             workerId: rbac.effectiveWorkerId,
           });
-          const workers = this.db.getWorkers();
+          const workers = await this.db.getWorkers();
           const zoneAnalytics = AnalyticsEngine.computeZoneAnalytics(
             zones,
             assignments,
@@ -1156,7 +1207,7 @@ export class BackendApp {
             range.toMs
           );
 
-          const helmets = this.db.getRawHelmets();
+          const helmets = await this.db.getRawHelmets();
           const connectivityAnalytics = AnalyticsEngine.computeConnectivityAnalytics(
             helmets,
             alerts,
@@ -1202,8 +1253,15 @@ export class BackendApp {
       this.sendJson(res, 404, { error: `API endpoint not found: ${method} ${pathname}` });
       return true;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.sendJson(res, 500, { error: 'Internal Server Error', message });
+      StructuredLogger.error({
+        requestId: RequestIdManager.resolveRequestId(req, res),
+        method,
+        route: pathname,
+        status: 500,
+        message: err instanceof Error ? err.message : String(err),
+      });
+
+      this.sendJson(res, 500, { error: 'Internal Server Error' });
       return true;
     }
   }
@@ -1221,15 +1279,23 @@ export class BackendApp {
         body += chunk.toString();
       });
       req.on('end', () => {
-        try {
-          if (!body) resolve({});
-          else resolve(JSON.parse(body));
-        } catch {
+        if (!body.trim()) {
           resolve({});
+          return;
+        }
+        try {
+          const parsed = JSON.parse(body);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            resolve(parsed);
+          } else {
+            resolve({ _malformed: true });
+          }
+        } catch {
+          resolve({ _malformed: true });
         }
       });
       req.on('error', () => {
-        resolve({});
+        resolve({ _malformed: true });
       });
     });
   }

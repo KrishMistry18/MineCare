@@ -11,6 +11,8 @@
  * 7. REST API: All 18 endpoints via BackendApp request dispatcher
  */
 
+process.env.NODE_ENV = 'test';
+
 import { IncomingMessage, ServerResponse } from 'http';
 import { Socket } from 'net';
 import { DatabaseRepository } from '../src/backend/db/DatabaseRepository';
@@ -364,7 +366,7 @@ async function runTests() {
   // =========================================================================
   console.log('\n--- 7. VERSIONED REST API (18 ENDPOINTS) ---');
   const app = BackendApp.getInstance();
-  const authRes = await app.getAuthManager().login('supervisor@minecare.local', 'Supervisor#2026!');
+  const authRes = await app.getAuthManager().login('supervisor@minecare.local', 'Supervisor#Password2026');
   const testAuthToken = 'session' in authRes ? authRes.session.token : '';
 
   async function mockRequest(pathname: string, method: string = 'GET', bodyData?: unknown): Promise<{ status: number; body: any }> {

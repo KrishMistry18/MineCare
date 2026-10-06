@@ -80,12 +80,13 @@ INSERT INTO zone_assignments (id, worker_id, helmet_id, zone_id, assigned_at, ch
 ('ZA-016', 'WRK-016', 'MC-016', 'zone-portal-surface',      NOW() - INTERVAL '3 hours', NOW() - INTERVAL '3 hours', 'DEFAULT_INITIAL', TRUE)
 ON CONFLICT (id) DO NOTHING;
 
--- 5. SEED CANONICAL USER PROFILES
+-- 5. SEED CANONICAL USER PROFILES (profiles table - auth_user_id linked dynamically by Supabase Auth)
 INSERT INTO profiles (id, auth_user_id, name, email, role, worker_id, active) VALUES
-('PRF-001', 'auth-admin-001', 'Admin Operator', 'admin@minecare.local', 'ADMIN', NULL, TRUE),
-('PRF-002', 'auth-sup-001', 'R. Supervisor', 'supervisor@minecare.local', 'SUPERVISOR', NULL, TRUE),
-('PRF-003', 'auth-wrk-001', 'R. Marak', 'worker.marak@minecare.local', 'WORKER', 'WRK-001', TRUE),
-('PRF-004', 'auth-wrk-002', 'S. Kujur', 'worker.kujur@minecare.local', 'WORKER', 'WRK-002', TRUE)
+('a0000000-0000-0000-0000-000000000000', NULL, 'Control Room Operator', 'operator@minecare.local', 'SUPERVISOR', NULL, TRUE),
+('a0000000-0000-0000-0000-000000000001', NULL, 'Admin Operator', 'admin@minecare.local', 'ADMIN', NULL, TRUE),
+('a0000000-0000-0000-0000-000000000002', NULL, 'Chief Supervisor', 'supervisor@minecare.local', 'SUPERVISOR', NULL, TRUE),
+('a0000000-0000-0000-0000-000000000003', NULL, 'R. Marak', 'worker.marak@minecare.local', 'WORKER', 'WRK-001', TRUE),
+('a0000000-0000-0000-0000-000000000004', NULL, 'S. Kujur', 'worker.kujur@minecare.local', 'WORKER', 'WRK-002', TRUE)
 ON CONFLICT (email) DO UPDATE SET
   name = EXCLUDED.name,
   role = EXCLUDED.role,

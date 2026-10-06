@@ -10,6 +10,8 @@
  * 6. CLIENT SECURITY: Secrets audit, no service role key, no plaintext password storage
  */
 
+process.env.NODE_ENV = 'test';
+
 import { IncomingMessage, ServerResponse } from 'http';
 import { Socket } from 'net';
 import { BackendApp } from '../src/backend/app';
