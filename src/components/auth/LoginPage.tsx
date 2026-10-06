@@ -51,6 +51,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
   };
 
   const handleQuickFill = (demoEmail: string) => {
+    if (!import.meta.env.DEV) return;
     setEmail(demoEmail);
     if (demoEmail.startsWith('admin')) {
       setPassword('Admin#Password2026');
@@ -180,38 +181,40 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
           </form>
 
           {/* Local Development Quick Role Switcher */}
-          <div className="mt-6 pt-5 border-t border-[#162133]">
-            <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-2.5 flex items-center justify-between">
-              <span>Development Test Accounts</span>
-              <span className="text-[10px] text-cyan-400/80">Click to autofill</span>
+          {Boolean(import.meta.env.DEV) && (
+            <div className="mt-6 pt-5 border-t border-[#162133]">
+              <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-2.5 flex items-center justify-between">
+                <span>Development Test Accounts</span>
+                <span className="text-[10px] text-cyan-400/80">Click to autofill</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleQuickFill('admin@minecare.local')}
+                  className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-purple-500/50 text-left transition-all group"
+                >
+                  <div className="text-[10px] font-bold text-purple-400 font-mono">ADMIN</div>
+                  <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">admin@minecare.local</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQuickFill('supervisor@minecare.local')}
+                  className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-cyan-500/50 text-left transition-all group"
+                >
+                  <div className="text-[10px] font-bold text-cyan-400 font-mono">SUPERVISOR</div>
+                  <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">supervisor@minecare.local</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQuickFill('worker.marak@minecare.local')}
+                  className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-emerald-500/50 text-left transition-all group"
+                >
+                  <div className="text-[10px] font-bold text-emerald-400 font-mono">WORKER</div>
+                  <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">worker.marak@minecare.local</div>
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickFill('admin@minecare.local')}
-                className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-purple-500/50 text-left transition-all group"
-              >
-                <div className="text-[10px] font-bold text-purple-400 font-mono">ADMIN</div>
-                <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">admin@minecare.local</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickFill('supervisor@minecare.local')}
-                className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-cyan-500/50 text-left transition-all group"
-              >
-                <div className="text-[10px] font-bold text-cyan-400 font-mono">SUPERVISOR</div>
-                <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">supervisor@minecare.local</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickFill('worker.marak@minecare.local')}
-                className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-emerald-500/50 text-left transition-all group"
-              >
-                <div className="text-[10px] font-bold text-emerald-400 font-mono">WORKER</div>
-                <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">worker.marak@minecare.local</div>
-              </button>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Security Notice Footer */}

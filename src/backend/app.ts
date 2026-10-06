@@ -28,6 +28,10 @@ import type { DbTelemetry, UserRole, DbUserProfile } from './types';
 import { getBackendConfig } from './config/env';
 import { StructuredLogger } from './security/StructuredLogger';
 import { RequestIdManager } from './security/RequestId';
+import { SecurityHeadersManager } from './security/SecurityHeaders';
+import { CorsManager } from './security/CorsManager';
+import { RequestLimiter } from './security/RequestLimiter';
+import { ApiError } from './security/ApiError';
 
 export class BackendApp {
   private static instance: BackendApp | null = null;
@@ -118,34 +122,25 @@ export class BackendApp {
    * Universal HTTP Dispatcher handling standard Node/Vite/Express requests
    */
   public async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+    // 1. Production Security Headers
+    SecurityHeadersManager.apply(res);
+
+    // 2. Correlation Request ID
+    const requestId = RequestIdManager.resolveRequestId(req, res);
+
+    // 3. Strict CORS Policy
+    const corsAllowed = CorsManager.handleCors(req, res);
+    if (!corsAllowed) {
+      return true;
+    }
+
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
     const method = req.method?.toUpperCase() || 'GET';
 
-    // CORS Configuration (Production Environment & Local Dev Fallback)
-    const configuredOrigin = typeof process !== 'undefined' ? process.env?.CORS_ORIGIN?.trim() : undefined;
-    const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : undefined;
-
-    let allowedOrigin = '*';
-    if (configuredOrigin) {
-      const allowedOrigins = configuredOrigin.split(',').map((o) => o.trim());
-      if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
-        allowedOrigin = requestOrigin;
-      } else {
-        allowedOrigin = allowedOrigins[0];
-      }
-      res.setHeader('Vary', 'Origin');
-    } else {
-      allowedOrigin = requestOrigin || '*';
-    }
-
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-    if (method === 'OPTIONS') {
-      res.statusCode = 204;
-      res.end();
+    // 4. URI Length Protection
+    if (RequestLimiter.isUriTooLong(req.url || '')) {
+      this.sendJson(res, 414, ApiError.uriTooLong(requestId));
       return true;
     }
 
@@ -1272,31 +1267,18 @@ export class BackendApp {
     res.end(JSON.stringify(data));
   }
 
-  private readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-    return new Promise((resolve) => {
-      let body = '';
-      req.on('data', (chunk: Buffer | string) => {
-        body += chunk.toString();
-      });
-      req.on('end', () => {
-        if (!body.trim()) {
-          resolve({});
-          return;
-        }
-        try {
-          const parsed = JSON.parse(body);
-          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-            resolve(parsed);
-          } else {
-            resolve({ _malformed: true });
-          }
-        } catch {
-          resolve({ _malformed: true });
-        }
-      });
-      req.on('error', () => {
-        resolve({ _malformed: true });
-      });
-    });
+  private async readJsonBody(
+    req: IncomingMessage,
+    pathname: string = ''
+  ): Promise<Record<string, unknown> & { _malformed?: boolean; _tooLarge?: boolean }> {
+    const limit = RequestLimiter.getLimitForPath(pathname);
+    const result = await RequestLimiter.readLimitedJsonBody(req, limit);
+    if (result.tooLarge) {
+      return { _tooLarge: true };
+    }
+    if (result.parseError || !result.data || Array.isArray(result.data)) {
+      return { _malformed: true };
+    }
+    return result.data;
   }
 }

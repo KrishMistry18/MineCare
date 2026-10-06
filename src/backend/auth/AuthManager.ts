@@ -107,7 +107,7 @@ export class AuthManager {
         let profile: DbUserProfile | null = null;
         try {
           profile = await this.db.getProfileByAuthId(verifiedPayload.sub);
-          if (!profile && verifiedPayload.email) {
+          if (!profile && !getBackendConfig().isProduction && verifiedPayload.email) {
             profile = await this.db.getProfileByEmail(verifiedPayload.email);
           }
         } catch (dbErr) {
@@ -163,7 +163,11 @@ export class AuthManager {
       }
     }
 
-    // 2. Automated Test / In-process fallback authentication (test runners only)
+    // 2. Automated Test / In-process fallback authentication (strictly disabled in production)
+    if (getBackendConfig().isProduction) {
+      return { error: 'Invalid email or password', code: 401 };
+    }
+
     let profile: DbUserProfile | null = null;
     try {
       profile = await this.db.getProfileByEmail(cleanEmail);
@@ -357,7 +361,7 @@ export class AuthManager {
     if (payload.sub) {
       profile = await this.db.getProfileByAuthId(payload.sub);
     }
-    if (!profile && payload.email) {
+    if (!profile && !getBackendConfig().isProduction && payload.email) {
       profile = await this.db.getProfileByEmail(payload.email);
     }
 

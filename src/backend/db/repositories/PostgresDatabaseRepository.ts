@@ -887,28 +887,97 @@ export class PostgresProfileRepository implements IProfileRepository {
 
 export class PostgresAuditRepository implements IAuditRepository {
   private cm: IConnectionManager;
+  private retryQueue: Array<{ entry: Omit<DbAuditLog, 'id' | 'created_at'>; id: string; attempts: number }> = [];
+  private isProcessingRetry = false;
+  private retryTimer: NodeJS.Timeout | null = null;
+
   constructor(cm: IConnectionManager) {
     this.cm = cm;
   }
 
   public async log(entry: Omit<DbAuditLog, 'id' | 'created_at'>): Promise<DbAuditLog> {
     const id = crypto.randomUUID();
-    const res = await this.cm.query<DbAuditLog>(
-      `INSERT INTO audit_logs (id, user_id, user_email, role, action, target_type, target_id, details, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-       RETURNING *`,
-      [
+    try {
+      const res = await this.cm.query<DbAuditLog>(
+        `INSERT INTO audit_logs (id, user_id, user_email, role, action, target_type, target_id, details, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+         RETURNING *`,
+        [
+          id,
+          entry.user_id,
+          entry.user_email,
+          entry.role,
+          entry.action,
+          entry.target_type,
+          entry.target_id,
+          JSON.stringify(entry.details || {}),
+        ]
+      );
+      return res.rows[0];
+    } catch {
+      // Enqueue in resilient retry buffer if queue has capacity (< 500)
+      if (this.retryQueue.length < 500) {
+        this.retryQueue.push({ entry, id, attempts: 0 });
+        this.scheduleRetry();
+      }
+      return {
         id,
-        entry.user_id,
-        entry.user_email,
-        entry.role,
-        entry.action,
-        entry.target_type,
-        entry.target_id,
-        JSON.stringify(entry.details || {}),
-      ]
-    );
-    return res.rows[0];
+        created_at: new Date().toISOString(),
+        ...entry,
+        details: entry.details || {},
+      };
+    }
+  }
+
+  private scheduleRetry(): void {
+    if (this.isProcessingRetry || this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.processRetryQueue();
+    }, 1000);
+    if (typeof this.retryTimer.unref === 'function') {
+      this.retryTimer.unref();
+    }
+  }
+
+  private async processRetryQueue(): Promise<void> {
+    if (this.isProcessingRetry || this.retryQueue.length === 0) return;
+    this.isProcessingRetry = true;
+    try {
+      while (this.retryQueue.length > 0) {
+        const item = this.retryQueue[0];
+        try {
+          await this.cm.query(
+            `INSERT INTO audit_logs (id, user_id, user_email, role, action, target_type, target_id, details, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+             ON CONFLICT (id) DO NOTHING`,
+            [
+              item.id,
+              item.entry.user_id,
+              item.entry.user_email,
+              item.entry.role,
+              item.entry.action,
+              item.entry.target_type,
+              item.entry.target_id,
+              JSON.stringify(item.entry.details || {}),
+            ]
+          );
+          this.retryQueue.shift();
+        } catch {
+          item.attempts += 1;
+          if (item.attempts >= 5) {
+            this.retryQueue.shift(); // Drop after 5 failed attempts
+          } else {
+            break; // Pause and retry on next cycle
+          }
+        }
+      }
+    } finally {
+      this.isProcessingRetry = false;
+      if (this.retryQueue.length > 0) {
+        this.scheduleRetry();
+      }
+    }
   }
 
   public async findAll(limit: number = 100): Promise<DbAuditLog[]> {
