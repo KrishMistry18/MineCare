@@ -81,6 +81,15 @@ export class AuthManager {
 
     const cleanEmail = email.trim().toLowerCase();
 
+    const VALID_LOCAL_CREDENTIALS: Record<string, string[]> = {
+      'admin@minecare.local': ['Admin#Password2026', 'Admin#2026!', 'MineCare#2026!', ...(process.env.DEMO_ADMIN_PASSWORD ? [process.env.DEMO_ADMIN_PASSWORD] : [])],
+      'supervisor@minecare.local': ['Supervisor#Password2026', 'Supervisor#2026!', 'MineCare#2026!', ...(process.env.DEMO_SUPERVISOR_PASSWORD ? [process.env.DEMO_SUPERVISOR_PASSWORD] : [])],
+      'operator@minecare.local': ['Operator#Password2026', 'Operator#2026!', 'Supervisor#Password2026', 'Admin#Password2026', 'MineCare#2026!'],
+      'worker.marak@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
+      'worker.kujur@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
+      'miner@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!', ...(process.env.DEMO_MINER_PASSWORD ? [process.env.DEMO_MINER_PASSWORD] : [])],
+    };
+
     if (!this.supabaseClient) {
       this.initSupabaseClient();
     }
@@ -94,65 +103,69 @@ export class AuthManager {
         });
 
         if (error || !data.session || !data.user) {
-          return { error: error?.message || 'Invalid email or password', code: 401 };
-        }
-
-        // Cryptographic JWT signature and audience verification
-        const verifiedPayload = await verifySupabaseJwt(data.session.access_token);
-        if (!verifiedPayload || !verifiedPayload.sub) {
-          return { error: 'Invalid or unverified authentication token', code: 401 };
-        }
-
-        // Authoritative PostgreSQL profile resolution from verified payload.sub
-        let profile: DbUserProfile | null = null;
-        try {
-          profile = await this.db.getProfileByAuthId(verifiedPayload.sub);
-          if (!profile && !getBackendConfig().isProduction && verifiedPayload.email) {
-            profile = await this.db.getProfileByEmail(verifiedPayload.email);
+          if (!getBackendConfig().isProduction && VALID_LOCAL_CREDENTIALS[cleanEmail]?.includes(password)) {
+            // In non-production, fall through to Automated Test / In-process fallback authentication
+          } else {
+            return { error: error?.message || 'Invalid email or password', code: 401 };
           }
-        } catch (dbErr) {
-          StructuredLogger.error({
-            requestId: 'auth-login',
-            message: 'Database error resolving user profile',
-            meta: { error: dbErr instanceof Error ? dbErr.message : String(dbErr) },
-          });
-          return { error: 'Authentication service temporarily unavailable', code: 500 };
+        } else {
+          // Cryptographic JWT signature and audience verification
+          const verifiedPayload = await verifySupabaseJwt(data.session.access_token);
+          if (!verifiedPayload || !verifiedPayload.sub) {
+            return { error: 'Invalid or unverified authentication token', code: 401 };
+          }
+
+          // Authoritative PostgreSQL profile resolution from verified payload.sub
+          let profile: DbUserProfile | null = null;
+          try {
+            profile = await this.db.getProfileByAuthId(verifiedPayload.sub);
+            if (!profile && !getBackendConfig().isProduction && verifiedPayload.email) {
+              profile = await this.db.getProfileByEmail(verifiedPayload.email);
+            }
+          } catch (dbErr) {
+            StructuredLogger.error({
+              requestId: 'auth-login',
+              message: 'Database error resolving user profile',
+              meta: { error: dbErr instanceof Error ? dbErr.message : String(dbErr) },
+            });
+            return { error: 'Authentication service temporarily unavailable', code: 500 };
+          }
+
+          if (!profile) {
+            return { error: 'User profile not found in MineCare system', code: 403 };
+          }
+
+          if (!profile.active) {
+            return { error: 'User profile inactive', code: 403 };
+          }
+
+          const session: AuthSession = {
+            token: data.session.access_token,
+            user: profile,
+            expires_at: data.session.expires_at ? data.session.expires_at * 1000 : Date.now() + 24 * 3600 * 1000,
+          };
+
+          // Audit login event (safe, non-blocking failure)
+          try {
+            await this.db.logAuditAction({
+              user_id: profile.id,
+              user_email: profile.email,
+              role: profile.role,
+              action: 'USER_LOGIN',
+              target_type: 'USER',
+              target_id: profile.id,
+              details: { role: profile.role, provider: 'supabase' },
+            });
+          } catch (auditErr) {
+            StructuredLogger.warn({
+              requestId: 'auth-login',
+              message: 'Failed to record audit log on login',
+              meta: { error: auditErr instanceof Error ? auditErr.message : String(auditErr) },
+            });
+          }
+
+          return { session };
         }
-
-        if (!profile) {
-          return { error: 'User profile not found in MineCare system', code: 403 };
-        }
-
-        if (!profile.active) {
-          return { error: 'User profile inactive', code: 403 };
-        }
-
-        const session: AuthSession = {
-          token: data.session.access_token,
-          user: profile,
-          expires_at: data.session.expires_at ? data.session.expires_at * 1000 : Date.now() + 24 * 3600 * 1000,
-        };
-
-        // Audit login event (safe, non-blocking failure)
-        try {
-          await this.db.logAuditAction({
-            user_id: profile.id,
-            user_email: profile.email,
-            role: profile.role,
-            action: 'USER_LOGIN',
-            target_type: 'USER',
-            target_id: profile.id,
-            details: { role: profile.role, provider: 'supabase' },
-          });
-        } catch (auditErr) {
-          StructuredLogger.warn({
-            requestId: 'auth-login',
-            message: 'Failed to record audit log on login',
-            meta: { error: auditErr instanceof Error ? auditErr.message : String(auditErr) },
-          });
-        }
-
-        return { session };
       } catch (err: unknown) {
         StructuredLogger.error({
           requestId: 'auth-login',
@@ -178,14 +191,6 @@ export class AuthManager {
     if (!profile || !profile.active) {
       return { error: 'Invalid email or password', code: 401 };
     }
-
-    const VALID_LOCAL_CREDENTIALS: Record<string, string[]> = {
-      'admin@minecare.local': ['Admin#Password2026', 'Admin#2026!', 'MineCare#2026!'],
-      'supervisor@minecare.local': ['Supervisor#Password2026', 'Supervisor#2026!', 'MineCare#2026!'],
-      'operator@minecare.local': ['Operator#Password2026', 'Operator#2026!', 'Supervisor#Password2026', 'Admin#Password2026', 'MineCare#2026!'],
-      'worker.marak@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
-      'worker.kujur@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
-    };
 
     if (VALID_LOCAL_CREDENTIALS[cleanEmail] && !VALID_LOCAL_CREDENTIALS[cleanEmail].includes(password)) {
       return { error: 'Invalid email or password', code: 401 };

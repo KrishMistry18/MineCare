@@ -181,6 +181,17 @@ export class DatabaseRepository {
         created_at: now,
         updated_at: now,
       },
+      {
+        id: 'PRF-005',
+        auth_user_id: 'auth-miner-001',
+        name: 'R. Marak',
+        email: 'miner@minecare.local',
+        role: 'WORKER',
+        worker_id: 'WRK-001',
+        active: true,
+        created_at: now,
+        updated_at: now,
+      },
     ];
 
     defaultProfiles.forEach((p) => {

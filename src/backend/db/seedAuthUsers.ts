@@ -9,34 +9,43 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { getBackendConfig } from '../config/env';
+import { getBackendConfig, loadEnvFiles } from '../config/env';
 import { connectionManager } from './connection';
+
+loadEnvFiles();
 
 export const CANONICAL_DEMO_USERS = [
   {
     email: 'admin@minecare.local',
-    password: 'Admin#Password2026',
+    password: process.env.DEMO_ADMIN_PASSWORD || 'Admin#Password2026',
     role: 'ADMIN' as const,
     name: 'Admin Operator',
     workerId: null,
   },
   {
     email: 'supervisor@minecare.local',
-    password: 'Supervisor#Password2026',
+    password: process.env.DEMO_SUPERVISOR_PASSWORD || 'Supervisor#Password2026',
     role: 'SUPERVISOR' as const,
     name: 'Chief Supervisor',
     workerId: null,
   },
   {
+    email: 'miner@minecare.local',
+    password: process.env.DEMO_MINER_PASSWORD || 'Worker#Password2026',
+    role: 'WORKER' as const,
+    name: 'R. Marak',
+    workerId: 'WRK-001',
+  },
+  {
     email: 'worker.marak@minecare.local',
-    password: 'Worker#Password2026',
+    password: process.env.DEMO_WORKER_PASSWORD || 'Worker#Password2026',
     role: 'WORKER' as const,
     name: 'R. Marak',
     workerId: 'WRK-001',
   },
   {
     email: 'worker.kujur@minecare.local',
-    password: 'Worker#Password2026',
+    password: process.env.DEMO_WORKER_PASSWORD || 'Worker#Password2026',
     role: 'WORKER' as const,
     name: 'S. Kujur',
     workerId: 'WRK-002',
@@ -69,12 +78,14 @@ export async function seedAuthUsers(): Promise<boolean> {
         const existing = listData.users.find((u) => u.email?.toLowerCase() === userDef.email.toLowerCase());
         if (existing) {
           authUserId = existing.id;
-          // Update password to ensure demo credentials match
-          await supabase.auth.admin.updateUserById(existing.id, {
+          const { error: updateErr } = await supabase.auth.admin.updateUserById(existing.id, {
             password: userDef.password,
             email_confirm: true,
             user_metadata: { role: userDef.role, name: userDef.name },
           });
+          if (updateErr) {
+            console.error(`[MineCare Auth Seeder] Failed to update ${userDef.email}:`, updateErr.message);
+          }
         }
       }
     } catch (err) {
@@ -119,3 +130,16 @@ export async function seedAuthUsers(): Promise<boolean> {
 
   return true;
 }
+
+if (process.argv[1] && process.argv[1].includes('seedAuthUsers')) {
+  seedAuthUsers()
+    .then(() => {
+      console.log('[MineCare Auth Seeder] Completed successfully.');
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error('[MineCare Auth Seeder] Error:', err);
+      process.exit(1);
+    });
+}
+
