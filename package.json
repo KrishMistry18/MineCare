@@ -14,7 +14,8 @@
     "db:migrate": "tsx src/backend/db/runMigrations.ts",
     "db:seed": "tsx src/backend/db/seedFleet.ts",
     "verify:supabase": "tsx test/supabase_live_verification.ts",
-    "test:smoke": "tsx test/production_smoke_test.ts"
+    "test:smoke": "tsx test/production_smoke_test.ts",
+    "test:phase13": "tsx test/phase13_production_verification.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.1",
