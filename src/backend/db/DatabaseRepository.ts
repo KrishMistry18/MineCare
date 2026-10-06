@@ -21,6 +21,7 @@ import type {
 } from '../types';
 import { INITIAL_MINE_ZONES } from '../../types/zone';
 import { INITIAL_WORKERS } from '../../data/mockData';
+import { StructuredLogger } from '../security/StructuredLogger';
 
 export class DatabaseRepository {
   private static instance: DatabaseRepository | null = null;
@@ -622,8 +623,10 @@ export class DatabaseRepository {
   // ==================== AUDIT LOGS ====================
 
   public logAuditAction(entry: Omit<DbAuditLog, 'id' | 'created_at'>): DbAuditLog {
+    const sanitizedDetails = entry.details ? (StructuredLogger.redact(entry.details) as Record<string, unknown>) : {};
     const log: DbAuditLog = {
       ...entry,
+      details: sanitizedDetails,
       id: `LOG-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       created_at: new Date().toISOString(),
     };

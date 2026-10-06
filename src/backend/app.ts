@@ -35,6 +35,7 @@ import { ApiError } from './security/ApiError';
 import { InputValidator } from './security/InputValidator';
 import { RateLimiter } from './security/RateLimiter';
 import { DeviceAuthManager } from './security/DeviceAuth';
+import { MetricsCollector } from './observability/MetricsCollector';
 
 export class BackendApp {
   private static instance: BackendApp | null = null;
@@ -107,6 +108,8 @@ export class BackendApp {
     AuthManager.resetInstance();
     RateLimiter.resetInstance();
     DeviceAuthManager.resetRegistry();
+    MetricsCollector.resetInstance();
+    StructuredLogger.clearLogs();
     BackendApp.instance = null;
   }
 
@@ -142,6 +145,11 @@ export class BackendApp {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
     const method = req.method?.toUpperCase() || 'GET';
+
+    (res as any)._startTime = Date.now();
+    (res as any)._method = method;
+    (res as any)._pathname = pathname;
+    (res as any)._requestId = requestId;
 
     // 4. URI Length Protection
     if (RequestLimiter.isUriTooLong(req.url || '')) {
@@ -230,6 +238,7 @@ export class BackendApp {
         RateLimiter.getInstance().applyHeaders(res, generalRateCheck);
 
         if (!generalRateCheck.allowed) {
+          MetricsCollector.getInstance().recordRateLimitEvent('GENERAL', clientIp);
           this.sendJson(
             res,
             429,
@@ -267,6 +276,7 @@ export class BackendApp {
         RateLimiter.getInstance().applyHeaders(res, rateCheck);
 
         if (!rateCheck.allowed) {
+          MetricsCollector.getInstance().recordRateLimitEvent('AUTH', authIdentifier);
           this.sendJson(
             res,
             429,
@@ -282,6 +292,12 @@ export class BackendApp {
         const authResult = await this.authManager.login(email, password);
 
         if ('error' in authResult) {
+          MetricsCollector.getInstance().recordDeviceSecurityEvent(
+            'FAILED_LOGIN_ATTEMPT',
+            { email },
+            requestId,
+            clientIp
+          );
           this.sendJson(res, authResult.code, ApiError.unauthorized(requestId, authResult.error));
         } else {
           // Reset rate limit on successful authentication
@@ -345,6 +361,7 @@ export class BackendApp {
         const validation = TelemetryValidator.validate(body);
 
         if (!validation.isValid || !validation.packet) {
+          MetricsCollector.getInstance().recordTelemetryValidationFailure('Validation Failed', validation.errors);
           this.sendJson(res, 400, ApiError.badRequest(requestId, 'Validation Failed', validation.errors));
           return true;
         }
@@ -368,6 +385,35 @@ export class BackendApp {
             status === 403
               ? ApiError.forbidden(requestId, deviceAuth.error || 'Access denied: Device not bound to helmet')
               : ApiError.unauthorized(requestId, deviceAuth.error || 'Unauthorized: Valid device credentials required');
+
+          const rawToken = req.headers['x-device-token'];
+          const devToken = typeof rawToken === 'string' ? rawToken : '';
+          const isRevoked = devToken && DeviceAuthManager.isTokenRevoked(devToken);
+          const isMismatch = deviceAuth.error?.includes('bound to helmet');
+
+          if (isRevoked) {
+            MetricsCollector.getInstance().recordDeviceSecurityEvent(
+              'REVOKED_DEVICE_TOKEN',
+              { token: devToken, targetHelmetId: packet.helmetId },
+              requestId,
+              clientIp
+            );
+          } else if (isMismatch) {
+            MetricsCollector.getInstance().recordDeviceSecurityEvent(
+              'DEVICE_HELMET_MISMATCH',
+              { token: devToken, targetHelmetId: packet.helmetId },
+              requestId,
+              clientIp
+            );
+          } else {
+            MetricsCollector.getInstance().recordDeviceSecurityEvent(
+              'INVALID_DEVICE_TOKEN',
+              { token: devToken, targetHelmetId: packet.helmetId, authType: deviceAuth.authType },
+              requestId,
+              clientIp
+            );
+          }
+
           this.sendJson(res, status, errPayload);
           return true;
         }
@@ -378,6 +424,7 @@ export class BackendApp {
         RateLimiter.getInstance().applyHeaders(res, teleRateCheck);
 
         if (!teleRateCheck.allowed) {
+          MetricsCollector.getInstance().recordRateLimitEvent('TELEMETRY', teleIdentifier);
           this.sendJson(
             res,
             429,
@@ -435,9 +482,31 @@ export class BackendApp {
 
         if (alertResult.createdAlert) {
           await this.db.saveAlert(alertResult.createdAlert);
+          MetricsCollector.getInstance().recordAlertCreated(
+            alertResult.createdAlert.id,
+            packet.helmetId,
+            alertResult.createdAlert.type,
+            alertResult.createdAlert.severity
+          );
         }
         for (const resolved of alertResult.resolvedAlerts) {
           await this.db.resolveAlert(resolved.id, resolved.supervisor_notes || 'Auto-resolved');
+          MetricsCollector.getInstance().recordAlertResolved(resolved.id);
+        }
+
+        // Operational Hazard Tracking
+        MetricsCollector.getInstance().recordTelemetryPacket(packet.packetId, packet.helmetId);
+        if (packet.sosPressed) {
+          MetricsCollector.getInstance().recordHazardEvent('SOS', packet.helmetId);
+        }
+        if (packet.fallDetected || packet.totalAcceleration > 15) {
+          MetricsCollector.getInstance().recordHazardEvent('FALL', packet.helmetId);
+        }
+        if (packet.gasValue > 800) {
+          MetricsCollector.getInstance().recordHazardEvent('GAS', packet.helmetId);
+        }
+        if (packet.temperature > 40) {
+          MetricsCollector.getInstance().recordHazardEvent('TEMPERATURE', packet.helmetId);
         }
 
         // Realtime Broadcast (Authoritative Database Changes)
@@ -546,6 +615,7 @@ export class BackendApp {
         RateLimiter.getInstance().applyHeaders(res, adminRateCheck);
 
         if (!adminRateCheck.allowed) {
+          MetricsCollector.getInstance().recordRateLimitEvent('ADMIN', adminIdentifier);
           this.sendJson(
             res,
             429,
@@ -619,6 +689,13 @@ export class BackendApp {
             details: { email: newProfile.email, role: newProfile.role },
           });
 
+          MetricsCollector.getInstance().recordDeviceSecurityEvent(
+            'ADMIN_SECURITY_ACTION',
+            { action: 'USER_CREATE', targetUserId: newProfile.id, role: newProfile.role },
+            requestId,
+            clientIp
+          );
+
           this.sendJson(res, 201, { success: true, profile: newProfile });
           return true;
         }
@@ -672,6 +749,13 @@ export class BackendApp {
             details: { oldRole, newRole },
           });
 
+          MetricsCollector.getInstance().recordDeviceSecurityEvent(
+            'ADMIN_SECURITY_ACTION',
+            { action: 'ROLE_CHANGE', targetUserId: cleanTargetUserId, oldRole, newRole },
+            requestId,
+            clientIp
+          );
+
           this.sendJson(res, 200, { success: true, profile: updated });
           return true;
         }
@@ -690,6 +774,13 @@ export class BackendApp {
           }
           const logs = await this.db.getAuditLogs(pagination.sanitized!.limit);
           this.sendJson(res, 200, logs);
+          return true;
+        }
+
+        // GET /api/v1/admin/metrics (Production Observability Snapshot)
+        if (pathname === '/api/v1/admin/metrics' && method === 'GET') {
+          const snapshot = await MetricsCollector.getInstance().getSnapshot(this.db);
+          this.sendJson(res, 200, snapshot);
           return true;
         }
 
@@ -1713,6 +1804,41 @@ export class BackendApp {
     res.statusCode = statusCode;
     res.setHeader('Content-Type', 'application/json');
 
+    const startTime = (res as any)._startTime as number | undefined;
+    const method = (res as any)._method as string | undefined;
+    const pathname = (res as any)._pathname as string | undefined;
+    const durationMs = startTime ? Date.now() - startTime : 0;
+    const reqId = (res.getHeader('X-Request-ID') as string) || (res as any)._requestId || 'req-unknown';
+
+    MetricsCollector.getInstance().recordRequest(method || 'GET', pathname || '/', statusCode, durationMs);
+
+    const level = statusCode >= 500 ? 'ERROR' : statusCode >= 400 ? 'WARN' : 'INFO';
+    if (level === 'ERROR') {
+      StructuredLogger.error({
+        requestId: reqId,
+        method,
+        route: pathname,
+        status: statusCode,
+        durationMs,
+      });
+    } else if (level === 'WARN') {
+      StructuredLogger.warn({
+        requestId: reqId,
+        method,
+        route: pathname,
+        status: statusCode,
+        durationMs,
+      });
+    } else {
+      StructuredLogger.info({
+        requestId: reqId,
+        method,
+        route: pathname,
+        status: statusCode,
+        durationMs,
+      });
+    }
+
     // Standardize all error responses (4xx & 5xx) through ApiError envelope
     if (statusCode >= 400 && data && typeof data === 'object') {
       const obj = data as Record<string, unknown>;
@@ -1722,8 +1848,6 @@ export class BackendApp {
         return;
       }
 
-      // Legacy or plain error object { error: string, ... }
-      const reqId = (res.getHeader('X-Request-ID') as string) || 'req-unknown';
       let message = 'An unexpected error occurred';
       if (typeof obj.error === 'string') {
         message = obj.error;

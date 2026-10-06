@@ -34,13 +34,35 @@ export function getAuthToken(): string | null {
 export class ApiError extends Error {
   public status: number;
   public details?: unknown;
+  public requestId?: string;
 
-  constructor(message: string, status: number, details?: unknown) {
+  constructor(message: string, status: number, details?: unknown, requestId?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.details = details;
+    this.requestId = requestId;
   }
+}
+
+type ApiErrorListener = (error: ApiError) => void;
+const errorListeners: Set<ApiErrorListener> = new Set();
+
+export function onApiError(listener: ApiErrorListener): () => void {
+  errorListeners.add(listener);
+  return () => {
+    errorListeners.delete(listener);
+  };
+}
+
+function notifyError(error: ApiError): void {
+  errorListeners.forEach((listener) => {
+    try {
+      listener(error);
+    } catch {
+      // ignore handler errors
+    }
+  });
 }
 
 export async function apiRequest<T>(
@@ -62,18 +84,28 @@ export async function apiRequest<T>(
       headers,
     });
 
+    const requestId =
+      response.headers.get('x-request-id') ||
+      response.headers.get('X-Request-ID') ||
+      undefined;
+
     if (!response.ok) {
-      let errorDetails: unknown = null;
+      let errorDetails: any = null;
       try {
         errorDetails = await response.json();
       } catch {
         // Ignore json parse error for non-json responses
       }
-      throw new ApiError(
+
+      const reqId = requestId || (errorDetails?.error?.requestId as string | undefined);
+      const apiErr = new ApiError(
         `API request failed: ${response.status} ${response.statusText}`,
         response.status,
-        errorDetails
+        errorDetails,
+        reqId
       );
+      notifyError(apiErr);
+      throw apiErr;
     }
 
     return (await response.json()) as T;
@@ -81,10 +113,12 @@ export async function apiRequest<T>(
     if (error instanceof ApiError) {
       throw error;
     }
-    throw new ApiError(
+    const netErr = new ApiError(
       error instanceof Error ? error.message : 'Network error connecting to backend API',
       0,
       error
     );
+    notifyError(netErr);
+    throw netErr;
   }
 }

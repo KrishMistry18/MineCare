@@ -31,6 +31,7 @@ import type {
   WorkerWithZoneDetails,
   HelmetWithDetails,
 } from './interfaces';
+import { StructuredLogger } from '../../security/StructuredLogger';
 
 export class PostgresZoneRepository implements IZoneRepository {
   private cm: IConnectionManager;
@@ -897,6 +898,14 @@ export class PostgresAuditRepository implements IAuditRepository {
 
   public async log(entry: Omit<DbAuditLog, 'id' | 'created_at'>): Promise<DbAuditLog> {
     const id = crypto.randomUUID();
+    const sanitizedDetails = entry.details
+      ? (StructuredLogger.redact(entry.details) as Record<string, unknown>)
+      : {};
+    const sanitizedEntry = {
+      ...entry,
+      details: sanitizedDetails,
+    };
+
     try {
       const res = await this.cm.query<DbAuditLog>(
         `INSERT INTO audit_logs (id, user_id, user_email, role, action, target_type, target_id, details, created_at)
@@ -904,27 +913,27 @@ export class PostgresAuditRepository implements IAuditRepository {
          RETURNING *`,
         [
           id,
-          entry.user_id,
-          entry.user_email,
-          entry.role,
-          entry.action,
-          entry.target_type,
-          entry.target_id,
-          JSON.stringify(entry.details || {}),
+          sanitizedEntry.user_id,
+          sanitizedEntry.user_email,
+          sanitizedEntry.role,
+          sanitizedEntry.action,
+          sanitizedEntry.target_type,
+          sanitizedEntry.target_id,
+          JSON.stringify(sanitizedDetails),
         ]
       );
       return res.rows[0];
     } catch {
       // Enqueue in resilient retry buffer if queue has capacity (< 500)
       if (this.retryQueue.length < 500) {
-        this.retryQueue.push({ entry, id, attempts: 0 });
+        this.retryQueue.push({ entry: sanitizedEntry, id, attempts: 0 });
         this.scheduleRetry();
       }
       return {
         id,
         created_at: new Date().toISOString(),
-        ...entry,
-        details: entry.details || {},
+        ...sanitizedEntry,
+        details: sanitizedDetails,
       };
     }
   }
