@@ -15,11 +15,12 @@ export class CorsManager {
    */
   public static handleCors(req: IncomingMessage, res: ServerResponse): boolean {
     const config = getBackendConfig();
+    const isProduction = process.env.NODE_ENV === 'production' || config.isProduction;
     const originHeader = req.headers.origin;
     const requestOrigin = typeof originHeader === 'string' ? originHeader.trim() : undefined;
 
-    // Parse configured allowlist from CORS_ORIGIN
-    const rawOrigins = (config.corsOrigin || process.env.CORS_ORIGIN || '').trim();
+    // Parse configured allowlist from CORS_ORIGIN (process.env takes precedence in production)
+    const rawOrigins = (process.env.CORS_ORIGIN || config.corsOrigin || '').trim();
     const allowlist = rawOrigins
       ? rawOrigins.split(',').map((o) => o.trim().toLowerCase()).filter(Boolean)
       : [];
@@ -37,7 +38,7 @@ export class CorsManager {
       const isLocalhostOrigin =
         /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(lowerReqOrigin);
 
-      if (!config.isProduction && (isLocalhostOrigin || allowlist.length === 0)) {
+      if (!isProduction && (isLocalhostOrigin || allowlist.length === 0)) {
         isAllowed = true;
         allowedOriginToSet = requestOrigin;
       } else if (allowlist.includes(lowerReqOrigin)) {
@@ -63,7 +64,7 @@ export class CorsManager {
 
     // Handle OPTIONS Preflight
     if (req.method?.toUpperCase() === 'OPTIONS') {
-      if (!isAllowed && config.isProduction) {
+      if (!isAllowed && isProduction) {
         res.statusCode = 403;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'CORS origin not allowed' }));
@@ -74,7 +75,7 @@ export class CorsManager {
       return false; // Handled completely
     }
 
-    if (!isAllowed && config.isProduction) {
+    if (!isAllowed && isProduction) {
       res.statusCode = 403;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'CORS origin not allowed' }));

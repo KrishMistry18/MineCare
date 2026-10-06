@@ -5,11 +5,23 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: npm start
-    healthCheckPath: /api/v1/system/health
+    healthCheckPath: /readyz
     envVars:
       - key: NODE_ENV
         value: production
       - key: HOST
         value: 0.0.0.0
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
       - key: CORS_ORIGIN
+        sync: false
+      - key: MINECARE_DEVICE_SECRET
         sync: false

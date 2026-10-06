@@ -13,7 +13,8 @@
     "test": "tsx test/backend.test.ts && tsx test/auth_rbac.test.ts && tsx test/phase4_realtime.test.ts && tsx test/phase5_analytics.test.ts && tsx test/phase6_simulation_hardening.test.ts && tsx test/phase8_postgres_auth.test.ts && tsx test/task9_1_validation.test.ts && tsx test/phase9_hardening.test.ts && tsx test/phase10_realtime_hardening.test.ts && tsx test/phase11_observability.test.ts",
     "db:migrate": "tsx src/backend/db/runMigrations.ts",
     "db:seed": "tsx src/backend/db/seedFleet.ts",
-    "verify:supabase": "tsx test/supabase_live_verification.ts"
+    "verify:supabase": "tsx test/supabase_live_verification.ts",
+    "test:smoke": "tsx test/production_smoke_test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.1",
