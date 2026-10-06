@@ -13,7 +13,7 @@ export interface ValidationResult<T = unknown> {
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ENTITY_ID_REGEX = /^[A-Za-z0-9_\-]{3,64}$/;
+const ENTITY_ID_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
 export class InputValidator {
@@ -39,6 +39,21 @@ export class InputValidator {
       return { isValid: false, errors: [`${fieldName} contains invalid characters; must be alphanumeric, hyphen, or underscore`] };
     }
     return { isValid: true, errors: [], sanitized: clean };
+  }
+
+  /**
+   * Validates optional Entity ID format (returns sanitized undefined if omitted)
+   */
+  public static validateOptionalEntityId(id: unknown, fieldName = 'id'): ValidationResult<string | undefined> {
+    if (id === undefined || id === null || id === '') {
+      return { isValid: true, errors: [], sanitized: undefined };
+    }
+    const check = this.validateEntityId(id, fieldName);
+    return {
+      isValid: check.isValid,
+      errors: check.errors,
+      sanitized: check.sanitized,
+    };
   }
 
   /**
@@ -120,14 +135,57 @@ export class InputValidator {
   }
 
   /**
+   * Validates Alert Status query filter
+   */
+  public static validateAlertStatus(status: unknown): ValidationResult<string | undefined> {
+    if (status === undefined || status === null || status === '') {
+      return { isValid: true, errors: [], sanitized: undefined };
+    }
+    if (typeof status !== 'string') {
+      return { isValid: false, errors: ['status must be a string'] };
+    }
+    const clean = status.trim().toUpperCase();
+    const allowed = ['TRIGGERED', 'ACKNOWLEDGED', 'RESOLVED', 'ACTIVE'];
+    if (!allowed.includes(clean)) {
+      return {
+        isValid: false,
+        errors: [`Invalid alert status '${clean}'. Allowed statuses: ${allowed.join(', ')}`],
+      };
+    }
+    return { isValid: true, errors: [], sanitized: clean };
+  }
+
+  /**
+   * Validates Alert Severity query filter
+   */
+  public static validateAlertSeverity(severity: unknown): ValidationResult<string | undefined> {
+    if (severity === undefined || severity === null || severity === '') {
+      return { isValid: true, errors: [], sanitized: undefined };
+    }
+    if (typeof severity !== 'string') {
+      return { isValid: false, errors: ['severity must be a string'] };
+    }
+    const clean = severity.trim().toUpperCase();
+    const allowed = ['CRITICAL', 'WARNING', 'INFO', 'LOW', 'MEDIUM', 'HIGH', 'DANGER'];
+    if (!allowed.includes(clean)) {
+      return {
+        isValid: false,
+        errors: [`Invalid alert severity '${clean}'. Allowed severities: ${allowed.join(', ')}`],
+      };
+    }
+    return { isValid: true, errors: [], sanitized: clean };
+  }
+
+  /**
    * Validates Zone Check-In & Reassignment payload
    */
   public static validateZoneAssignmentPayload(payload: unknown): ValidationResult<{ zoneId: string }> {
     if (!payload || typeof payload !== 'object') {
       return { isValid: false, errors: ['Request body must be a JSON object'] };
     }
-    const data = payload as { zoneId?: unknown };
-    const idCheck = this.validateEntityId(data.zoneId, 'zoneId');
+    const data = payload as { zoneId?: unknown; zoneName?: unknown };
+    const rawTarget = data.zoneId ?? data.zoneName;
+    const idCheck = this.validateEntityId(rawTarget, 'zoneId');
     if (!idCheck.isValid || !idCheck.sanitized) {
       return { isValid: false, errors: idCheck.errors };
     }
@@ -141,8 +199,8 @@ export class InputValidator {
     if (!payload || typeof payload !== 'object') {
       return { isValid: true, errors: [], sanitized: {} };
     }
-    const data = payload as { notes?: unknown; supervisor_notes?: unknown };
-    const rawNotes = data.notes ?? data.supervisor_notes;
+    const data = payload as { notes?: unknown; supervisor_notes?: unknown; supervisorNotes?: unknown };
+    const rawNotes = data.notes ?? data.supervisor_notes ?? data.supervisorNotes;
 
     if (rawNotes !== undefined && rawNotes !== null) {
       if (typeof rawNotes !== 'string') {

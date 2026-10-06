@@ -32,6 +32,7 @@ import { SecurityHeadersManager } from './security/SecurityHeaders';
 import { CorsManager } from './security/CorsManager';
 import { RequestLimiter } from './security/RequestLimiter';
 import { ApiError } from './security/ApiError';
+import { InputValidator } from './security/InputValidator';
 
 export class BackendApp {
   private static instance: BackendApp | null = null;
@@ -430,22 +431,29 @@ export class BackendApp {
         const userRoleMatch = pathname.match(/^\/api\/v1\/admin\/users\/([^/]+)\/role$/);
         if (userRoleMatch && method === 'PUT') {
           const targetUserId = userRoleMatch[1];
+          const userVal = InputValidator.validateEntityId(targetUserId, 'userId');
+          if (!userVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, userVal.errors.join('; ')));
+            return true;
+          }
+          const cleanTargetUserId = userVal.sanitized!;
+
           const body = await this.readJsonBody(req);
           const newRole = String(body.role || '').toUpperCase() as UserRole;
 
           if (!['ADMIN', 'SUPERVISOR', 'WORKER'].includes(newRole)) {
-            this.sendJson(res, 400, { error: 'Invalid role. Must be ADMIN, SUPERVISOR, or WORKER' });
+            this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid role. Must be ADMIN, SUPERVISOR, or WORKER'));
             return true;
           }
 
-          const existing = await this.db.getProfile(targetUserId);
+          const existing = await this.db.getProfile(cleanTargetUserId);
           if (!existing) {
-            this.sendJson(res, 404, { error: `User profile ${targetUserId} not found` });
+            this.sendJson(res, 404, { error: `User profile ${cleanTargetUserId} not found` });
             return true;
           }
 
           const oldRole = existing.role;
-          const updated = await this.db.updateProfile(targetUserId, {
+          const updated = await this.db.updateProfile(cleanTargetUserId, {
             role: newRole,
             worker_id: newRole === 'WORKER' ? (existing.worker_id ?? null) : null,
           });
@@ -456,7 +464,7 @@ export class BackendApp {
             role: currentUser.role,
             action: 'ROLE_CHANGE',
             target_type: 'USER',
-            target_id: targetUserId,
+            target_id: cleanTargetUserId,
             details: { oldRole, newRole },
           });
 
@@ -466,8 +474,17 @@ export class BackendApp {
 
         // GET /api/v1/admin/audit-logs
         if (pathname === '/api/v1/admin/audit-logs' && method === 'GET') {
-          const limit = Number(url.searchParams.get('limit') || 100);
-          const logs = await this.db.getAuditLogs(limit);
+          const pagination = InputValidator.validatePagination(
+            url.searchParams.get('limit'),
+            url.searchParams.get('offset'),
+            100,
+            1000
+          );
+          if (!pagination.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, pagination.errors.join('; ')));
+            return true;
+          }
+          const logs = await this.db.getAuditLogs(pagination.sanitized!.limit);
           this.sendJson(res, 200, logs);
           return true;
         }
@@ -506,11 +523,18 @@ export class BackendApp {
       const helmetLatestMatch = pathname.match(/^\/api\/v1\/helmets\/([^/]+)\/latest$/);
       if (helmetLatestMatch && method === 'GET') {
         const helmetId = helmetLatestMatch[1];
+        const helmetVal = InputValidator.validateEntityId(helmetId, 'helmetId');
+        if (!helmetVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+          return true;
+        }
+        const cleanHelmetId = helmetVal.sanitized!;
+
         const allHelmets = await this.db.getHelmets();
-        const helmet = allHelmets.find((h) => h.id === helmetId || h.helmet_code === helmetId);
+        const helmet = allHelmets.find((h) => h.id === cleanHelmetId || h.helmet_code === cleanHelmetId);
 
         if (!helmet) {
-          this.sendJson(res, 404, { error: `No telemetry recorded for helmet ${helmetId}` });
+          this.sendJson(res, 404, { error: `No telemetry recorded for helmet ${cleanHelmetId}` });
           return true;
         }
 
@@ -521,7 +545,7 @@ export class BackendApp {
 
         const latest = await this.db.getLatestTelemetry(helmet.id);
         if (!latest) {
-          this.sendJson(res, 404, { error: `No telemetry recorded for helmet ${helmetId}` });
+          this.sendJson(res, 404, { error: `No telemetry recorded for helmet ${cleanHelmetId}` });
         } else {
           this.sendJson(res, 200, latest);
         }
@@ -532,11 +556,29 @@ export class BackendApp {
       const helmetHistoryMatch = pathname.match(/^\/api\/v1\/helmets\/([^/]+)\/history$/);
       if (helmetHistoryMatch && method === 'GET') {
         const helmetId = helmetHistoryMatch[1];
+        const helmetVal = InputValidator.validateEntityId(helmetId, 'helmetId');
+        if (!helmetVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+          return true;
+        }
+        const cleanHelmetId = helmetVal.sanitized!;
+
+        const pagination = InputValidator.validatePagination(
+          url.searchParams.get('limit'),
+          url.searchParams.get('offset'),
+          50,
+          1000
+        );
+        if (!pagination.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, pagination.errors.join('; ')));
+          return true;
+        }
+
         const allHelmets = await this.db.getHelmets();
-        const helmet = allHelmets.find((h) => h.id === helmetId || h.helmet_code === helmetId);
+        const helmet = allHelmets.find((h) => h.id === cleanHelmetId || h.helmet_code === cleanHelmetId);
 
         if (!helmet) {
-          this.sendJson(res, 404, { error: `Helmet ${helmetId} not found` });
+          this.sendJson(res, 404, { error: `Helmet ${cleanHelmetId} not found` });
           return true;
         }
 
@@ -545,8 +587,7 @@ export class BackendApp {
           return true;
         }
 
-        const limit = Number(url.searchParams.get('limit') || 50);
-        const history = await this.db.getTelemetryHistory(helmet.id, limit);
+        const history = await this.db.getTelemetryHistory(helmet.id, pagination.sanitized!.limit);
         this.sendJson(res, 200, history);
         return true;
       }
@@ -555,11 +596,18 @@ export class BackendApp {
       const helmetMatch = pathname.match(/^\/api\/v1\/helmets\/([^/]+)$/);
       if (helmetMatch && method === 'GET') {
         const helmetId = helmetMatch[1];
+        const helmetVal = InputValidator.validateEntityId(helmetId, 'helmetId');
+        if (!helmetVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+          return true;
+        }
+        const cleanHelmetId = helmetVal.sanitized!;
+
         const allHelmets = await this.db.getHelmets();
-        const helmet = allHelmets.find((h) => h.id === helmetId || h.helmet_code === helmetId);
+        const helmet = allHelmets.find((h) => h.id === cleanHelmetId || h.helmet_code === cleanHelmetId);
 
         if (!helmet) {
-          this.sendJson(res, 404, { error: `Helmet ${helmetId} not found` });
+          this.sendJson(res, 404, { error: `Helmet ${cleanHelmetId} not found` });
           return true;
         }
 
@@ -592,15 +640,21 @@ export class BackendApp {
       const workerMatch = pathname.match(/^\/api\/v1\/workers\/([^/]+)$/);
       if (workerMatch && method === 'GET') {
         const workerId = workerMatch[1];
+        const workerVal = InputValidator.validateEntityId(workerId, 'workerId');
+        if (!workerVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, workerVal.errors.join('; ')));
+          return true;
+        }
+        const cleanWorkerId = workerVal.sanitized!;
 
-        if (currentUser.role === 'WORKER' && workerId !== currentUser.worker_id) {
+        if (currentUser.role === 'WORKER' && cleanWorkerId !== currentUser.worker_id) {
           this.sendJson(res, 403, { error: 'Forbidden: Workers cannot view other workers profiles' });
           return true;
         }
 
-        const worker = await this.db.getWorker(workerId);
+        const worker = await this.db.getWorker(cleanWorkerId);
         if (!worker) {
-          this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
+          this.sendJson(res, 404, { error: `Worker ${cleanWorkerId} not found` });
         } else {
           this.sendJson(res, 200, worker);
         }
@@ -611,28 +665,41 @@ export class BackendApp {
       const workerCheckInMatch = pathname.match(/^\/api\/v1\/workers\/([^/]+)\/check-in$/);
       if (workerCheckInMatch && method === 'POST') {
         const workerId = workerCheckInMatch[1];
+        const workerVal = InputValidator.validateEntityId(workerId, 'workerId');
+        if (!workerVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, workerVal.errors.join('; ')));
+          return true;
+        }
+        const cleanWorkerId = workerVal.sanitized!;
 
         // Worker can only check in themselves
-        if (currentUser.role === 'WORKER' && workerId !== currentUser.worker_id) {
+        if (currentUser.role === 'WORKER' && cleanWorkerId !== currentUser.worker_id) {
           this.sendJson(res, 403, { error: 'Forbidden: Workers cannot check in other workers' });
           return true;
         }
 
         const body = await this.readJsonBody(req);
-        const worker = await this.db.getWorker(workerId);
+        const targetZone = body.zoneId || body.zoneName || 'portal-surface';
+        const zoneVal = InputValidator.validateEntityId(targetZone, 'zoneId');
+        if (!zoneVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, zoneVal.errors.join('; ')));
+          return true;
+        }
+        const cleanZoneId = zoneVal.sanitized!;
+
+        const worker = await this.db.getWorker(cleanWorkerId);
 
         if (!worker) {
-          this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
+          this.sendJson(res, 404, { error: `Worker ${cleanWorkerId} not found` });
           return true;
         }
 
         const allHelmets = await this.db.getHelmets();
         const helmet = allHelmets.find((h) => h.worker_id === worker.id);
-        const targetZoneId = String(body.zoneId || body.zoneName || 'portal-surface');
-        const zone = await this.db.getZone(targetZoneId);
+        const zone = await this.db.getZone(cleanZoneId);
 
         if (!zone) {
-          this.sendJson(res, 400, { error: `Zone ${targetZoneId} not found` });
+          this.sendJson(res, 400, { error: `Zone ${cleanZoneId} not found` });
           return true;
         }
 
@@ -672,16 +739,22 @@ export class BackendApp {
       const workerCheckOutMatch = pathname.match(/^\/api\/v1\/workers\/([^/]+)\/check-out$/);
       if (workerCheckOutMatch && method === 'POST') {
         const workerId = workerCheckOutMatch[1];
+        const workerVal = InputValidator.validateEntityId(workerId, 'workerId');
+        if (!workerVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, workerVal.errors.join('; ')));
+          return true;
+        }
+        const cleanWorkerId = workerVal.sanitized!;
 
         // Worker can only check out themselves
-        if (currentUser.role === 'WORKER' && workerId !== currentUser.worker_id) {
+        if (currentUser.role === 'WORKER' && cleanWorkerId !== currentUser.worker_id) {
           this.sendJson(res, 403, { error: 'Forbidden: Workers cannot check out other workers' });
           return true;
         }
 
-        const worker = await this.db.getWorker(workerId);
+        const worker = await this.db.getWorker(cleanWorkerId);
         if (!worker) {
-          this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
+          this.sendJson(res, 404, { error: `Worker ${cleanWorkerId} not found` });
           return true;
         }
 
@@ -721,28 +794,42 @@ export class BackendApp {
       // POST /api/v1/workers/:id/zone (Zone Reassignment)
       const workerZoneMatch = pathname.match(/^\/api\/v1\/workers\/([^/]+)\/zone$/);
       if (workerZoneMatch && method === 'POST') {
+        const workerId = workerZoneMatch[1];
+        const workerVal = InputValidator.validateEntityId(workerId, 'workerId');
+        if (!workerVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, workerVal.errors.join('; ')));
+          return true;
+        }
+        const cleanWorkerId = workerVal.sanitized!;
+
         // Workers CANNOT reassign workers
         if (currentUser.role === 'WORKER') {
           this.sendJson(res, 403, { error: 'Forbidden: Workers are not authorized to perform zone reassignment' });
           return true;
         }
 
-        const workerId = workerZoneMatch[1];
         const body = await this.readJsonBody(req);
-        const worker = await this.db.getWorker(workerId);
+        const targetZone = body.zoneId || body.zoneName;
+        const zoneVal = InputValidator.validateEntityId(targetZone, 'zoneId');
+        if (!zoneVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, zoneVal.errors.join('; ')));
+          return true;
+        }
+        const cleanZoneId = zoneVal.sanitized!;
+
+        const worker = await this.db.getWorker(cleanWorkerId);
 
         if (!worker) {
-          this.sendJson(res, 404, { error: `Worker ${workerId} not found` });
+          this.sendJson(res, 404, { error: `Worker ${cleanWorkerId} not found` });
           return true;
         }
 
         const allHelmets = await this.db.getHelmets();
         const helmet = allHelmets.find((h) => h.worker_id === worker.id);
-        const targetZoneId = String(body.zoneId || body.zoneName || '');
-        const zone = await this.db.getZone(targetZoneId);
+        const zone = await this.db.getZone(cleanZoneId);
 
         if (!zone) {
-          this.sendJson(res, 400, { error: `Zone ${targetZoneId} not found` });
+          this.sendJson(res, 400, { error: `Zone ${cleanZoneId} not found` });
           return true;
         }
 
@@ -831,9 +918,16 @@ export class BackendApp {
       const zoneWorkersMatch = pathname.match(/^\/api\/v1\/zones\/([^/]+)\/workers$/);
       if (zoneWorkersMatch && method === 'GET') {
         const zoneId = zoneWorkersMatch[1];
-        const zone = await this.db.getZone(zoneId);
+        const zoneVal = InputValidator.validateEntityId(zoneId, 'zoneId');
+        if (!zoneVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, zoneVal.errors.join('; ')));
+          return true;
+        }
+        const cleanZoneId = zoneVal.sanitized!;
+
+        const zone = await this.db.getZone(cleanZoneId);
         if (!zone) {
-          this.sendJson(res, 404, { error: `Zone ${zoneId} not found` });
+          this.sendJson(res, 404, { error: `Zone ${cleanZoneId} not found` });
           return true;
         }
 
@@ -851,9 +945,16 @@ export class BackendApp {
       const zoneMatch = pathname.match(/^\/api\/v1\/zones\/([^/]+)$/);
       if (zoneMatch && method === 'GET') {
         const zoneId = zoneMatch[1];
-        const zone = await this.db.getZone(zoneId);
+        const zoneVal = InputValidator.validateEntityId(zoneId, 'zoneId');
+        if (!zoneVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, zoneVal.errors.join('; ')));
+          return true;
+        }
+        const cleanZoneId = zoneVal.sanitized!;
+
+        const zone = await this.db.getZone(cleanZoneId);
         if (!zone) {
-          this.sendJson(res, 404, { error: `Zone ${zoneId} not found` });
+          this.sendJson(res, 404, { error: `Zone ${cleanZoneId} not found` });
         } else {
           this.sendJson(res, 200, zone);
         }
@@ -866,10 +967,56 @@ export class BackendApp {
 
       // GET /api/v1/alerts
       if (pathname === '/api/v1/alerts' && method === 'GET') {
-        const status = url.searchParams.get('status') || undefined;
-        const severity = url.searchParams.get('severity') || undefined;
-        const helmetId = url.searchParams.get('helmetId') || undefined;
-        const workerId = url.searchParams.get('workerId') || undefined;
+        const statusVal = InputValidator.validateAlertStatus(url.searchParams.get('status'));
+        if (!statusVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, statusVal.errors.join('; ')));
+          return true;
+        }
+
+        const severityVal = InputValidator.validateAlertSeverity(url.searchParams.get('severity'));
+        if (!severityVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, severityVal.errors.join('; ')));
+          return true;
+        }
+
+        const helmetVal = InputValidator.validateOptionalEntityId(url.searchParams.get('helmetId'), 'helmetId');
+        if (!helmetVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+          return true;
+        }
+
+        const workerVal = InputValidator.validateOptionalEntityId(url.searchParams.get('workerId'), 'workerId');
+        if (!workerVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, workerVal.errors.join('; ')));
+          return true;
+        }
+
+        const pagination = InputValidator.validatePagination(
+          url.searchParams.get('limit'),
+          url.searchParams.get('offset'),
+          50,
+          1000
+        );
+        if (!pagination.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, pagination.errors.join('; ')));
+          return true;
+        }
+
+        const sortVal = InputValidator.validateSort(
+          url.searchParams.get('sort'),
+          url.searchParams.get('direction'),
+          ['created_at', 'triggered_at', 'severity', 'status', 'timestamp'],
+          'triggered_at'
+        );
+        if (!sortVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, sortVal.errors.join('; ')));
+          return true;
+        }
+
+        const status = statusVal.sanitized;
+        const severity = severityVal.sanitized;
+        const helmetId = helmetVal.sanitized;
+        const workerId = workerVal.sanitized;
 
         if (currentUser.role === 'WORKER') {
           if (workerId && workerId !== currentUser.worker_id) {
@@ -907,6 +1054,17 @@ export class BackendApp {
 
       // GET /api/v1/alerts/history
       if (pathname === '/api/v1/alerts/history' && method === 'GET') {
+        const pagination = InputValidator.validatePagination(
+          url.searchParams.get('limit'),
+          url.searchParams.get('offset'),
+          50,
+          1000
+        );
+        if (!pagination.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, pagination.errors.join('; ')));
+          return true;
+        }
+
         let historyAlerts = await this.db.getAlertHistory();
         if (currentUser.role === 'WORKER') {
           historyAlerts = historyAlerts.filter((a) => a.worker_id === currentUser.worker_id);
@@ -918,22 +1076,29 @@ export class BackendApp {
       // POST /api/v1/alerts/:id/acknowledge
       const alertAckMatch = pathname.match(/^\/api\/v1\/alerts\/([^/]+)\/acknowledge$/);
       if (alertAckMatch && method === 'POST') {
+        const alertId = alertAckMatch[1];
+        const alertVal = InputValidator.validateEntityId(alertId, 'alertId');
+        if (!alertVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, alertVal.errors.join('; ')));
+          return true;
+        }
+        const cleanAlertId = alertVal.sanitized!;
+
         if (currentUser.role === 'WORKER') {
           this.sendJson(res, 403, { error: 'Forbidden: Workers cannot acknowledge alerts' });
           return true;
         }
 
-        const alertId = alertAckMatch[1];
         const body = await this.readJsonBody(req);
         const supervisorName =
-          typeof body.supervisorName === 'string'
-            ? body.supervisorName
+          typeof body.supervisorName === 'string' && body.supervisorName.trim()
+            ? InputValidator.sanitizeString(body.supervisorName.trim())
             : currentUser.name || 'Supervisor On-Duty';
 
-        const alert = await this.db.acknowledgeAlert(alertId, supervisorName);
+        const alert = await this.db.acknowledgeAlert(cleanAlertId, supervisorName);
 
         if (!alert) {
-          this.sendJson(res, 404, { error: `Alert ${alertId} not found` });
+          this.sendJson(res, 404, { error: `Alert ${cleanAlertId} not found` });
         } else {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
@@ -944,7 +1109,7 @@ export class BackendApp {
             role: currentUser.role,
             action: 'ALERT_ACKNOWLEDGE',
             target_type: 'ALERT',
-            target_id: alertId,
+            target_id: cleanAlertId,
             details: { acknowledged_by: supervisorName },
           });
           this.sendJson(res, 200, alert);
@@ -955,24 +1120,33 @@ export class BackendApp {
       // POST /api/v1/alerts/:id/resolve
       const alertResolveMatch = pathname.match(/^\/api\/v1\/alerts\/([^/]+)\/resolve$/);
       if (alertResolveMatch && method === 'POST') {
+        const alertId = alertResolveMatch[1];
+        const alertVal = InputValidator.validateEntityId(alertId, 'alertId');
+        if (!alertVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, alertVal.errors.join('; ')));
+          return true;
+        }
+        const cleanAlertId = alertVal.sanitized!;
+
         if (currentUser.role === 'WORKER') {
           this.sendJson(res, 403, { error: 'Forbidden: Workers cannot resolve supervisor alerts' });
           return true;
         }
 
-        const alertId = alertResolveMatch[1];
         const body = await this.readJsonBody(req);
+        const payloadVal = InputValidator.validateAlertResolvePayload(body);
+        if (!payloadVal.isValid) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, payloadVal.errors.join('; ')));
+          return true;
+        }
         const notes =
-          typeof body.notes === 'string'
-            ? body.notes
-            : typeof body.supervisorNotes === 'string'
-            ? body.supervisorNotes
-            : `Resolved by ${currentUser.name}`;
+          payloadVal.sanitized?.notes ||
+          (currentUser.name ? `Resolved by ${currentUser.name}` : 'Resolved');
 
-        const alert = await this.db.resolveAlert(alertId, notes);
+        const alert = await this.db.resolveAlert(cleanAlertId, notes);
 
         if (!alert) {
-          this.sendJson(res, 404, { error: `Alert ${alertId} not found` });
+          this.sendJson(res, 404, { error: `Alert ${cleanAlertId} not found` });
         } else {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
@@ -983,7 +1157,7 @@ export class BackendApp {
             role: currentUser.role,
             action: 'ALERT_RESOLVE',
             target_type: 'ALERT',
-            target_id: alertId,
+            target_id: cleanAlertId,
             details: { notes, resolved_by: currentUser.name },
           });
           this.sendJson(res, 200, alert);
@@ -1008,7 +1182,7 @@ export class BackendApp {
 
         const range = AnalyticsEngine.validateTimeRange(fromParam, toParam);
         if (!range.valid || !range.from || !range.to || !range.fromMs || !range.toMs) {
-          this.sendJson(res, 400, { error: range.error || 'Invalid time range parameters' });
+          this.sendJson(res, 400, ApiError.badRequest(requestId, range.error || 'Invalid time range parameters'));
           return true;
         }
 
@@ -1023,20 +1197,27 @@ export class BackendApp {
         const helmetAnalyticsMatch = pathname.match(/^\/api\/v1\/analytics\/helmets\/([^/]+)$/);
         if (helmetAnalyticsMatch && method === 'GET') {
           const targetHelmetId = helmetAnalyticsMatch[1];
-          if (currentUser.role === 'WORKER' && userAssignedHelmetId && targetHelmetId !== userAssignedHelmetId) {
+          const helmetVal = InputValidator.validateEntityId(targetHelmetId, 'helmetId');
+          if (!helmetVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+            return true;
+          }
+          const cleanTargetHelmetId = helmetVal.sanitized!;
+
+          if (currentUser.role === 'WORKER' && userAssignedHelmetId && cleanTargetHelmetId !== userAssignedHelmetId) {
             this.sendJson(res, 403, { error: 'Forbidden: Workers may only inspect their assigned helmet analytics' });
             return true;
           }
 
-          const helmet = await this.db.getHelmetWithDetails(targetHelmetId);
+          const helmet = await this.db.getHelmetWithDetails(cleanTargetHelmetId);
           if (!helmet) {
-            this.sendJson(res, 404, { error: `Helmet ${targetHelmetId} not found` });
+            this.sendJson(res, 404, { error: `Helmet ${cleanTargetHelmetId} not found` });
             return true;
           }
 
-          const packets = await this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
+          const packets = await this.db.getTelemetryByRange({ from: range.from, to: range.to, helmetId: cleanTargetHelmetId });
           const telemetryAnalytics = AnalyticsEngine.computeTelemetryAnalytics(packets, range.fromMs, range.toMs);
-          const alerts = await this.db.getAlertsByRange({ from: range.from, to: range.to, helmetId: targetHelmetId });
+          const alerts = await this.db.getAlertsByRange({ from: range.from, to: range.to, helmetId: cleanTargetHelmetId });
           const alertAnalytics = AnalyticsEngine.computeAlertAnalytics(alerts, range.fromMs, range.toMs);
           const assignments = await this.db.getZoneAssignmentsByRange({ from: range.from, to: range.to, workerId: helmet.worker_id || undefined });
 
@@ -1054,14 +1235,21 @@ export class BackendApp {
         const workerAnalyticsMatch = pathname.match(/^\/api\/v1\/analytics\/workers\/([^/]+)$/);
         if (workerAnalyticsMatch && method === 'GET') {
           const targetWorkerId = workerAnalyticsMatch[1];
-          if (currentUser.role === 'WORKER' && targetWorkerId !== currentUser.worker_id) {
+          const workerVal = InputValidator.validateEntityId(targetWorkerId, 'workerId');
+          if (!workerVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, workerVal.errors.join('; ')));
+            return true;
+          }
+          const cleanTargetWorkerId = workerVal.sanitized!;
+
+          if (currentUser.role === 'WORKER' && cleanTargetWorkerId !== currentUser.worker_id) {
             this.sendJson(res, 403, { error: 'Forbidden: Workers may only inspect their own worker analytics' });
             return true;
           }
 
-          const worker = await this.db.getWorker(targetWorkerId);
+          const worker = await this.db.getWorker(cleanTargetWorkerId);
           if (!worker) {
-            this.sendJson(res, 404, { error: `Worker ${targetWorkerId} not found` });
+            this.sendJson(res, 404, { error: `Worker ${cleanTargetWorkerId} not found` });
             return true;
           }
 
@@ -1084,6 +1272,29 @@ export class BackendApp {
             zoneHistory: assignments,
           });
           return true;
+        }
+
+        // Validate optional filter parameters for general analytics
+        if (helmetIdParam) {
+          const hVal = InputValidator.validateEntityId(helmetIdParam, 'helmetId');
+          if (!hVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, hVal.errors.join('; ')));
+            return true;
+          }
+        }
+        if (workerIdParam) {
+          const wVal = InputValidator.validateEntityId(workerIdParam, 'workerId');
+          if (!wVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, wVal.errors.join('; ')));
+            return true;
+          }
+        }
+        if (zoneIdParam) {
+          const zVal = InputValidator.validateEntityId(zoneIdParam, 'zoneId');
+          if (!zVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, zVal.errors.join('; ')));
+            return true;
+          }
         }
 
         // Verify RBAC for general analytics queries

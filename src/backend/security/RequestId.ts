@@ -8,7 +8,7 @@
 import crypto from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 
-const VALID_REQUEST_ID_REGEX = /^[a-zA-Z0-9_\-]{8,64}$/;
+const VALID_REQUEST_ID_REGEX = /^[a-zA-Z0-9_-]{8,64}$/;
 
 export class RequestIdManager {
   /**
