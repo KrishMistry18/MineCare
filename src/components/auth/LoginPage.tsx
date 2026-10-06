@@ -13,6 +13,54 @@ interface LoginPageProps {
   onSuccess?: () => void;
 }
 
+/**
+ * Local development test account autofill shortcuts.
+ * Rendered conditionally strictly during development (import.meta.env.DEV).
+ * Tree-shaken completely from production bundles.
+ */
+const DevTestAccounts: React.FC<{
+  onSelect: (email: string, pass: string) => void;
+}> = ({ onSelect }) => {
+  if (!import.meta.env.DEV || import.meta.env.PROD) {
+    return null;
+  }
+
+  return (
+    <div className="mt-6 pt-5 border-t border-[#162133]">
+      <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-2.5 flex items-center justify-between">
+        <span>Development Test Accounts</span>
+        <span className="text-[10px] text-cyan-400/80">Click to autofill</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <button
+          type="button"
+          onClick={() => onSelect('admin@minecare.local', 'Admin#Password2026')}
+          className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-purple-500/50 text-left transition-all group"
+        >
+          <div className="text-[10px] font-bold text-purple-400 font-mono">ADMIN</div>
+          <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">admin@minecare.local</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelect('supervisor@minecare.local', 'Supervisor#Password2026')}
+          className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-cyan-500/50 text-left transition-all group"
+        >
+          <div className="text-[10px] font-bold text-cyan-400 font-mono">SUPERVISOR</div>
+          <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">supervisor@minecare.local</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelect('worker.marak@minecare.local', 'Worker#Password2026')}
+          className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-emerald-500/50 text-left transition-all group"
+        >
+          <div className="text-[10px] font-bold text-emerald-400 font-mono">WORKER</div>
+          <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">worker.marak@minecare.local</div>
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
   const { login, error: authContextError, clearError } = useAuth();
 
@@ -48,20 +96,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleQuickFill = (demoEmail: string) => {
-    if (!import.meta.env.DEV) return;
-    setEmail(demoEmail);
-    if (demoEmail.startsWith('admin')) {
-      setPassword('Admin#Password2026');
-    } else if (demoEmail.startsWith('supervisor') || demoEmail.startsWith('operator')) {
-      setPassword('Supervisor#Password2026');
-    } else {
-      setPassword('Worker#Password2026');
-    }
-    setLocalError(null);
-    clearError();
   };
 
   const displayError = localError || authContextError;
@@ -180,41 +214,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
             </button>
           </form>
 
-          {/* Local Development Quick Role Switcher */}
-          {Boolean(import.meta.env.DEV) && (
-            <div className="mt-6 pt-5 border-t border-[#162133]">
-              <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-2.5 flex items-center justify-between">
-                <span>Development Test Accounts</span>
-                <span className="text-[10px] text-cyan-400/80">Click to autofill</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickFill('admin@minecare.local')}
-                  className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-purple-500/50 text-left transition-all group"
-                >
-                  <div className="text-[10px] font-bold text-purple-400 font-mono">ADMIN</div>
-                  <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">admin@minecare.local</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickFill('supervisor@minecare.local')}
-                  className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-cyan-500/50 text-left transition-all group"
-                >
-                  <div className="text-[10px] font-bold text-cyan-400 font-mono">SUPERVISOR</div>
-                  <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">supervisor@minecare.local</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickFill('worker.marak@minecare.local')}
-                  className="p-2 rounded bg-[#070c14] hover:bg-[#121c2d] border border-[#1a2538] hover:border-emerald-500/50 text-left transition-all group"
-                >
-                  <div className="text-[10px] font-bold text-emerald-400 font-mono">WORKER</div>
-                  <div className="text-[9px] text-slate-400 truncate group-hover:text-slate-200">worker.marak@minecare.local</div>
-                </button>
-              </div>
-            </div>
-          )}
+          {/* Local Development Quick Role Switcher - Tree-shaken in production builds */}
+          {import.meta.env.DEV ? (
+            <DevTestAccounts
+              onSelect={(demoEmail, demoPassword) => {
+                setEmail(demoEmail);
+                setPassword(demoPassword);
+                setLocalError(null);
+                clearError();
+              }}
+            />
+          ) : null}
         </div>
 
         {/* Security Notice Footer */}

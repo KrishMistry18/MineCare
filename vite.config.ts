@@ -29,11 +29,20 @@ function backendApiPlugin(): Plugin {
 }
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [
-    tailwindcss(),
-    react(),
-    backendApiPlugin(),
-  ],
-})
+export default defineConfig(({ command }) => {
+  const isBuild = command === 'build';
+  return {
+    define: isBuild
+      ? {
+          'import.meta.env.DEV': 'false',
+          'import.meta.env.PROD': 'true',
+        }
+      : {},
+    plugins: [
+      tailwindcss(),
+      react(),
+      backendApiPlugin(),
+    ],
+  };
+});
 
