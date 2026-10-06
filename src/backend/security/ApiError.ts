@@ -90,6 +90,17 @@ export class ApiError {
     return this.create('RATE_LIMITED', message, requestId, { retryAfterSeconds });
   }
 
+  public static conflict(requestId: string, message = 'Conflict: Resource already exists'): ApiErrorBody {
+    return this.create('CONFLICT', message, requestId);
+  }
+
+  public static serviceUnavailable(
+    requestId: string,
+    message = 'Service Unavailable: Required dependency unavailable'
+  ): ApiErrorBody {
+    return this.create('SERVICE_UNAVAILABLE', message, requestId);
+  }
+
   public static internal(requestId: string, internalErr?: unknown, isProduction = false): ApiErrorBody {
     if (isProduction) {
       return this.create('INTERNAL_SERVER_ERROR', 'An unexpected internal server error occurred', requestId);

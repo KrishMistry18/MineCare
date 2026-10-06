@@ -677,4 +677,8 @@ export class DatabaseRepository {
       },
     };
   }
+
+  public async ping(): Promise<boolean> {
+    return true;
+  }
 }

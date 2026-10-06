@@ -33,6 +33,8 @@ import { CorsManager } from './security/CorsManager';
 import { RequestLimiter } from './security/RequestLimiter';
 import { ApiError } from './security/ApiError';
 import { InputValidator } from './security/InputValidator';
+import { RateLimiter } from './security/RateLimiter';
+import { DeviceAuthManager } from './security/DeviceAuth';
 
 export class BackendApp {
   private static instance: BackendApp | null = null;
@@ -103,6 +105,8 @@ export class BackendApp {
       clearInterval(BackendApp.instance.heartbeatTimer);
     }
     AuthManager.resetInstance();
+    RateLimiter.resetInstance();
+    DeviceAuthManager.resetRegistry();
     BackendApp.instance = null;
   }
 
@@ -145,29 +149,143 @@ export class BackendApp {
       return true;
     }
 
+    // 5. Health, Liveness, and Readiness Probes (/healthz, /livez, /readyz)
+    if (pathname === '/livez' || pathname === '/api/v1/livez') {
+      this.sendJson(res, 200, {
+        status: 'ALIVE',
+        live: true,
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+      });
+      return true;
+    }
+
+    if (pathname === '/readyz' || pathname === '/api/v1/readyz') {
+      let isReady = false;
+      try {
+        if (typeof (this.db as any).ping === 'function') {
+          isReady = await (this.db as any).ping();
+        } else {
+          const health = await this.db.getSystemHealth();
+          isReady = Boolean(health && health.services?.database?.status === 'CONNECTED');
+        }
+      } catch {
+        isReady = false;
+      }
+
+      if (isReady) {
+        this.sendJson(res, 200, {
+          status: 'READY',
+          ready: true,
+          database: 'CONNECTED',
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        this.sendJson(
+          res,
+          503,
+          ApiError.serviceUnavailable(requestId, 'Required PostgreSQL dependency unavailable')
+        );
+      }
+      return true;
+    }
+
+    if (pathname === '/healthz' || pathname === '/api/v1/healthz') {
+      try {
+        const health = await this.db.getSystemHealth();
+        const isOk = health.status === 'OPERATIONAL' || health.status === 'DEGRADED';
+        this.sendJson(res, isOk ? 200 : 503, {
+          status: health.status,
+          uptimeSeconds: health.uptimeSeconds,
+          services: health.services,
+          timestamp: health.timestamp,
+        });
+      } catch {
+        this.sendJson(
+          res,
+          503,
+          ApiError.serviceUnavailable(requestId, 'System health check failed')
+        );
+      }
+      return true;
+    }
+
     if (!pathname.startsWith('/api/v1/')) {
       return false; // Not handled by API router
     }
 
+    const rawIp = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1';
+    const clientIp = Array.isArray(rawIp) ? rawIp[0] : String(rawIp).split(',')[0].trim();
+
     try {
+      // 6. General API Rate Limiting (300 requests/minute on general endpoints)
+      const isExemptFromGeneral =
+        pathname === '/api/v1/system/health' ||
+        pathname === '/api/v1/auth/login' ||
+        pathname === '/api/v1/telemetry' ||
+        pathname.startsWith('/api/v1/admin/');
+
+      if (!isExemptFromGeneral) {
+        const generalRateCheck = await RateLimiter.getInstance().checkLimit('GENERAL', clientIp);
+        RateLimiter.getInstance().applyHeaders(res, generalRateCheck);
+
+        if (!generalRateCheck.allowed) {
+          this.sendJson(
+            res,
+            429,
+            ApiError.rateLimited(
+              requestId,
+              generalRateCheck.retryAfterSeconds || 1,
+              'Too Many Requests: API rate limit exceeded'
+            )
+          );
+          return true;
+        }
+      }
+
       // =========================================================================
       // 1. AUTHENTICATION ENDPOINTS (Public)
       // =========================================================================
 
       // POST /api/v1/auth/login
       if (pathname === '/api/v1/auth/login' && method === 'POST') {
-        const body = await this.readJsonBody(req);
-        if (body._malformed) {
-          this.sendJson(res, 401, { error: 'Invalid or malformed request payload' });
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
           return true;
         }
-        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        if (body._malformed) {
+          this.sendJson(res, 401, ApiError.unauthorized(requestId, 'Invalid or malformed request payload'));
+          return true;
+        }
+        const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
         const password = typeof body.password === 'string' ? body.password : '';
+
+        // Rate limiting: AUTH tier (5 attempts / 15 minutes to protect against brute-force)
+        const authIdentifier = `${clientIp}_${email || 'anonymous'}`;
+        const rateCheck = await RateLimiter.getInstance().checkLimit('AUTH', authIdentifier);
+        RateLimiter.getInstance().applyHeaders(res, rateCheck);
+
+        if (!rateCheck.allowed) {
+          this.sendJson(
+            res,
+            429,
+            ApiError.rateLimited(
+              requestId,
+              rateCheck.retryAfterSeconds || 60,
+              'Too Many Requests: Login rate limit exceeded. Please try again later.'
+            )
+          );
+          return true;
+        }
+
         const authResult = await this.authManager.login(email, password);
 
         if ('error' in authResult) {
-          this.sendJson(res, authResult.code, { error: authResult.error });
+          this.sendJson(res, authResult.code, ApiError.unauthorized(requestId, authResult.error));
         } else {
+          // Reset rate limit on successful authentication
+          await RateLimiter.getInstance().reset('AUTH', authIdentifier);
           this.sendJson(res, 200, {
             success: true,
             token: authResult.session.token,
@@ -181,7 +299,11 @@ export class BackendApp {
       // POST /api/v1/auth/logout
       if (pathname === '/api/v1/auth/logout' && method === 'POST') {
         const authHeader = req.headers.authorization || '';
-        const body = await this.readJsonBody(req);
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
         const token =
           (typeof body.token === 'string' ? body.token : '') ||
           authHeader.replace(/^Bearer\s+/i, '').trim();
@@ -197,7 +319,7 @@ export class BackendApp {
       if (pathname === '/api/v1/auth/session' && method === 'GET') {
         const user = await this.authManager.authenticateRequest(req);
         if (!user) {
-          this.sendJson(res, 401, { error: 'Unauthorized or session expired' });
+          this.sendJson(res, 401, ApiError.unauthorized(requestId, 'Unauthorized or session expired'));
         } else {
           const authHeader = req.headers.authorization || '';
           const token = authHeader.replace(/^Bearer\s+/i, '').trim();
@@ -214,15 +336,59 @@ export class BackendApp {
       // 2. TELEMETRY INGESTION (Public / Sensor Ingestion)
       // =========================================================================
       if (pathname === '/api/v1/telemetry' && method === 'POST') {
-        const body = await this.readJsonBody(req);
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+
         const validation = TelemetryValidator.validate(body);
 
         if (!validation.isValid || !validation.packet) {
-          this.sendJson(res, 400, { error: 'Validation Failed', details: validation.errors });
+          this.sendJson(res, 400, ApiError.badRequest(requestId, 'Validation Failed', validation.errors));
           return true;
         }
 
         const packet = validation.packet;
+
+        // Device Authentication Boundary (Hardware identity separate from human JWT)
+        const authHeader = req.headers.authorization;
+        const currentUser = authHeader ? await this.authManager.authenticateRequest(req) : null;
+        const isProduction = getBackendConfig().isProduction;
+
+        const deviceAuth = DeviceAuthManager.authenticateTelemetryRequest(
+          req,
+          currentUser,
+          isProduction,
+          packet.helmetId
+        );
+        if (!deviceAuth.isAuthenticated) {
+          const status = deviceAuth.statusCode || 401;
+          const errPayload =
+            status === 403
+              ? ApiError.forbidden(requestId, deviceAuth.error || 'Access denied: Device not bound to helmet')
+              : ApiError.unauthorized(requestId, deviceAuth.error || 'Unauthorized: Valid device credentials required');
+          this.sendJson(res, status, errPayload);
+          return true;
+        }
+
+        // Rate limiting: TELEMETRY tier (120 packets / minute)
+        const teleIdentifier = packet.helmetId || clientIp;
+        const teleRateCheck = await RateLimiter.getInstance().checkLimit('TELEMETRY', teleIdentifier);
+        RateLimiter.getInstance().applyHeaders(res, teleRateCheck);
+
+        if (!teleRateCheck.allowed) {
+          this.sendJson(
+            res,
+            429,
+            ApiError.rateLimited(
+              requestId,
+              teleRateCheck.retryAfterSeconds || 1,
+              'Too Many Requests: Telemetry ingestion rate limit exceeded'
+            )
+          );
+          return true;
+        }
 
         // Authoritative Safety Evaluation
         const safety = SafetyEngine.evaluate({
@@ -325,7 +491,7 @@ export class BackendApp {
       // =========================================================================
       if (pathname === '/api/v1/realtime/stream' && method === 'GET') {
         if (!currentUser) {
-          this.sendJson(res, 401, { error: 'Unauthorized: Authentication required for realtime stream' });
+          this.sendJson(res, 401, ApiError.unauthorized(requestId, 'Unauthorized: Authentication required for realtime stream'));
           return true;
         }
 
@@ -362,11 +528,29 @@ export class BackendApp {
       // =========================================================================
       if (pathname.startsWith('/api/v1/admin/')) {
         if (!currentUser) {
-          this.sendJson(res, 401, { error: 'Unauthorized: Authentication required' });
+          this.sendJson(res, 401, ApiError.unauthorized(requestId, 'Unauthorized: Authentication required'));
           return true;
         }
         if (currentUser.role !== 'ADMIN') {
-          this.sendJson(res, 403, { error: 'Forbidden: Admin access required' });
+          this.sendJson(res, 403, ApiError.forbidden(requestId, 'Forbidden: Admin access required'));
+          return true;
+        }
+
+        // Rate limiting: ADMIN tier (60 requests / minute)
+        const adminIdentifier = currentUser.id || clientIp;
+        const adminRateCheck = await RateLimiter.getInstance().checkLimit('ADMIN', adminIdentifier);
+        RateLimiter.getInstance().applyHeaders(res, adminRateCheck);
+
+        if (!adminRateCheck.allowed) {
+          this.sendJson(
+            res,
+            429,
+            ApiError.rateLimited(
+              requestId,
+              adminRateCheck.retryAfterSeconds || 1,
+              'Too Many Requests: Admin rate limit exceeded'
+            )
+          );
           return true;
         }
 
@@ -379,24 +563,32 @@ export class BackendApp {
 
         // POST /api/v1/admin/users
         if (pathname === '/api/v1/admin/users' && method === 'POST') {
-          const body = await this.readJsonBody(req);
+          const body = await this.readJsonBody(req, pathname);
+          if (body._tooLarge) {
+            this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+            return true;
+          }
+          if (body._malformed) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+            return true;
+          }
           const name = String(body.name || '');
           const email = String(body.email || '').trim().toLowerCase();
           const role = String(body.role || '').toUpperCase() as UserRole;
           const worker_id = typeof body.worker_id === 'string' ? body.worker_id : undefined;
 
           if (!name || !email || !role) {
-            this.sendJson(res, 400, { error: 'Name, email, and role are required' });
+            this.sendJson(res, 400, ApiError.badRequest(requestId, 'Name, email, and role are required'));
             return true;
           }
           if (!['ADMIN', 'SUPERVISOR', 'WORKER'].includes(role)) {
-            this.sendJson(res, 400, { error: 'Invalid role. Must be ADMIN, SUPERVISOR, or WORKER' });
+            this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid role. Must be ADMIN, SUPERVISOR, or WORKER'));
             return true;
           }
 
           const existing = await this.db.getProfileByEmail(email);
           if (existing) {
-            this.sendJson(res, 409, { error: `User with email ${email} already exists` });
+            this.sendJson(res, 409, ApiError.conflict(requestId, `User with email ${email} already exists`));
             return true;
           }
 
@@ -438,7 +630,15 @@ export class BackendApp {
           }
           const cleanTargetUserId = userVal.sanitized!;
 
-          const body = await this.readJsonBody(req);
+          const body = await this.readJsonBody(req, pathname);
+          if (body._tooLarge) {
+            this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+            return true;
+          }
+          if (body._malformed) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+            return true;
+          }
           const newRole = String(body.role || '').toUpperCase() as UserRole;
 
           if (!['ADMIN', 'SUPERVISOR', 'WORKER'].includes(newRole)) {
@@ -448,7 +648,7 @@ export class BackendApp {
 
           const existing = await this.db.getProfile(cleanTargetUserId);
           if (!existing) {
-            this.sendJson(res, 404, { error: `User profile ${cleanTargetUserId} not found` });
+            this.sendJson(res, 404, ApiError.notFound(requestId, `User profile ${cleanTargetUserId} not found`));
             return true;
           }
 
@@ -678,7 +878,15 @@ export class BackendApp {
           return true;
         }
 
-        const body = await this.readJsonBody(req);
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+        if (body._malformed) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+          return true;
+        }
         const targetZone = body.zoneId || body.zoneName || 'portal-surface';
         const zoneVal = InputValidator.validateEntityId(targetZone, 'zoneId');
         if (!zoneVal.isValid) {
@@ -808,7 +1016,15 @@ export class BackendApp {
           return true;
         }
 
-        const body = await this.readJsonBody(req);
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+        if (body._malformed) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+          return true;
+        }
         const targetZone = body.zoneId || body.zoneName;
         const zoneVal = InputValidator.validateEntityId(targetZone, 'zoneId');
         if (!zoneVal.isValid) {
@@ -1089,7 +1305,15 @@ export class BackendApp {
           return true;
         }
 
-        const body = await this.readJsonBody(req);
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+        if (body._malformed) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+          return true;
+        }
         const supervisorName =
           typeof body.supervisorName === 'string' && body.supervisorName.trim()
             ? InputValidator.sanitizeString(body.supervisorName.trim())
@@ -1098,7 +1322,7 @@ export class BackendApp {
         const alert = await this.db.acknowledgeAlert(cleanAlertId, supervisorName);
 
         if (!alert) {
-          this.sendJson(res, 404, { error: `Alert ${cleanAlertId} not found` });
+          this.sendJson(res, 404, ApiError.notFound(requestId, `Alert ${cleanAlertId} not found`));
         } else {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
@@ -1129,11 +1353,19 @@ export class BackendApp {
         const cleanAlertId = alertVal.sanitized!;
 
         if (currentUser.role === 'WORKER') {
-          this.sendJson(res, 403, { error: 'Forbidden: Workers cannot resolve supervisor alerts' });
+          this.sendJson(res, 403, ApiError.forbidden(requestId, 'Forbidden: Workers cannot resolve supervisor alerts'));
           return true;
         }
 
-        const body = await this.readJsonBody(req);
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+        if (body._malformed) {
+          this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+          return true;
+        }
         const payloadVal = InputValidator.validateAlertResolvePayload(body);
         if (!payloadVal.isValid) {
           this.sendJson(res, 400, ApiError.badRequest(requestId, payloadVal.errors.join('; ')));
@@ -1146,7 +1378,7 @@ export class BackendApp {
         const alert = await this.db.resolveAlert(cleanAlertId, notes);
 
         if (!alert) {
-          this.sendJson(res, 404, { error: `Alert ${cleanAlertId} not found` });
+          this.sendJson(res, 404, ApiError.notFound(requestId, `Alert ${cleanAlertId} not found`));
         } else {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
@@ -1456,9 +1688,10 @@ export class BackendApp {
       }
 
       // If route started with /api/v1/ but wasn't matched:
-      this.sendJson(res, 404, { error: `API endpoint not found: ${method} ${pathname}` });
+      this.sendJson(res, 404, ApiError.notFound(requestId, `API endpoint not found: ${method} ${pathname}`));
       return true;
     } catch (err: unknown) {
+      const isProduction = getBackendConfig().isProduction;
       StructuredLogger.error({
         requestId: RequestIdManager.resolveRequestId(req, res),
         method,
@@ -1467,7 +1700,7 @@ export class BackendApp {
         message: err instanceof Error ? err.message : String(err),
       });
 
-      this.sendJson(res, 500, { error: 'Internal Server Error' });
+      this.sendJson(res, 500, ApiError.internal(requestId, err, isProduction));
       return true;
     }
   }
@@ -1475,6 +1708,42 @@ export class BackendApp {
   private sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
     res.statusCode = statusCode;
     res.setHeader('Content-Type', 'application/json');
+
+    // Standardize all error responses (4xx & 5xx) through ApiError envelope
+    if (statusCode >= 400 && data && typeof data === 'object') {
+      const obj = data as Record<string, unknown>;
+      // Already formatted as ApiError envelope
+      if (obj.code && obj.error && typeof obj.error === 'object') {
+        res.end(JSON.stringify(data));
+        return;
+      }
+
+      // Legacy or plain error object { error: string, ... }
+      const reqId = (res.getHeader('X-Request-ID') as string) || 'req-unknown';
+      let message = 'An unexpected error occurred';
+      if (typeof obj.error === 'string') {
+        message = obj.error;
+      } else if (typeof obj.message === 'string') {
+        message = obj.message;
+      }
+
+      let code = 'ERROR';
+      if (statusCode === 400) code = 'VALIDATION_ERROR';
+      else if (statusCode === 401) code = 'UNAUTHORIZED';
+      else if (statusCode === 403) code = 'FORBIDDEN';
+      else if (statusCode === 404) code = 'NOT_FOUND';
+      else if (statusCode === 409) code = 'CONFLICT';
+      else if (statusCode === 413) code = 'PAYLOAD_TOO_LARGE';
+      else if (statusCode === 414) code = 'URI_TOO_LONG';
+      else if (statusCode === 429) code = 'RATE_LIMITED';
+      else if (statusCode === 500) code = 'INTERNAL_SERVER_ERROR';
+      else if (statusCode === 503) code = 'SERVICE_UNAVAILABLE';
+
+      const normalized = ApiError.create(code, message, reqId, obj.details);
+      res.end(JSON.stringify(normalized));
+      return;
+    }
+
     res.end(JSON.stringify(data));
   }
 

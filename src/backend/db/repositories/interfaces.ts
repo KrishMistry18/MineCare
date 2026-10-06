@@ -188,4 +188,5 @@ export interface IDatabaseRepository {
   getAuditLogs(limit?: number): Promise<DbAuditLog[]>;
 
   getSystemHealth(): Promise<SystemHealthStatus>;
+  ping?(): Promise<boolean>;
 }

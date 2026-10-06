@@ -1253,4 +1253,8 @@ export class PostgresDatabaseRepository implements IDatabaseRepository {
       },
     };
   }
+
+  public async ping(): Promise<boolean> {
+    return this.cm.testConnection();
+  }
 }
