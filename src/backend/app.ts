@@ -494,6 +494,10 @@ export class BackendApp {
           this.sendJson(res, 401, ApiError.unauthorized(requestId, 'Unauthorized: Authentication required for realtime stream'));
           return true;
         }
+        if (!currentUser.active) {
+          this.sendJson(res, 403, ApiError.forbidden(requestId, 'Forbidden: Inactive user account cannot subscribe to realtime stream'));
+          return true;
+        }
 
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/event-stream');

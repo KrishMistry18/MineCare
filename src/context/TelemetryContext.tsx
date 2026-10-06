@@ -73,11 +73,17 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     service.getLastTelemetryTime()
   );
 
-  // Sync auth context with RealtimeService for RBAC filtering
+  // Sync auth context with RealtimeService for RBAC filtering and connection lifecycle
   useEffect(() => {
-    service.getRealtimeService().setUser(
-      user ? { role: user.role, worker_id: user.worker_id } : null
-    );
+    if (!user) {
+      service.getRealtimeService().cleanupOnLogout();
+    } else {
+      service.getRealtimeService().setUser({
+        role: user.role,
+        worker_id: user.worker_id,
+      });
+      service.getRealtimeService().connect();
+    }
   }, [user, service]);
 
   useEffect(() => {

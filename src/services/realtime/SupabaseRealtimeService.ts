@@ -1,5 +1,5 @@
 /**
- * MineCare - Supabase Realtime Service
+ * MineCare - Supabase Realtime Service (Phase 10 Hardened)
  *
  * Implements authoritative Realtime delivery for:
  * - 'telemetry' (INSERT)
@@ -7,12 +7,15 @@
  * - 'alerts' (INSERT | UPDATE)
  * - 'zone_assignments' (INSERT | UPDATE)
  *
- * Connection Lifecycle:
+ * Connection Lifecycle & Hardening:
  * - CONNECTING -> CONNECTED
  * - On network/server failure: ERROR / DISCONNECTED
- * - Automatic exponential backoff reconnection
- * - Clean unsubscribe on unmount to prevent leaks and duplicate subscriptions
+ * - Automatic exponential backoff reconnection with jitter
+ * - Heartbeat / keepalive watchdog to detect hung or half-open connections
+ * - Browser network online/offline lifecycle listeners
+ * - Clean unsubscribe and connection teardown on logout/navigation
  * - Role-aware event filtering (Worker role receives ONLY permitted personal data)
+ * - Authoritative deduplication cache preventing duplicate event processing
  */
 
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
@@ -60,11 +63,21 @@ export class SupabaseRealtimeService {
   private reconnectAttempts: number = 0;
   private isExplicitDisconnect: boolean = false;
 
+  // Heartbeat / Keepalive watchdog
+  private lastHeartbeatTimestamp: number = Date.now();
+  private heartbeatWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimeoutMs: number = 45000; // 45 seconds default keepalive timeout
+
+  // Online / Offline window listeners
+  private onlineListener: (() => void) | null = null;
+  private offlineListener: (() => void) | null = null;
+
   // Active user authorization context
   private currentUser: { role: UserRole; worker_id?: string | null; assignedHelmetId?: string | null } | null = null;
 
   // Event deduplication cache
   private processedEventKeys: Set<string> = new Set();
+  private duplicateEventsDroppedCount: number = 0;
 
   private constructor() {
     this.checkConfiguration();
@@ -83,6 +96,7 @@ export class SupabaseRealtimeService {
   public static resetInstance(): void {
     if (SupabaseRealtimeService.instance) {
       SupabaseRealtimeService.instance.disconnect();
+      SupabaseRealtimeService.instance.clearTableSubscribers();
       SupabaseRealtimeService.instance = null;
     }
   }
@@ -164,6 +178,9 @@ export class SupabaseRealtimeService {
     }
 
     this.setConnectionState('CONNECTING');
+    this.lastHeartbeatTimestamp = Date.now();
+    this.setupNetworkListeners();
+    this.startKeepaliveWatchdog();
 
     if (this.isSupabaseConfigured && this.supabaseClient) {
       this.connectRemoteSupabase();
@@ -182,6 +199,7 @@ export class SupabaseRealtimeService {
       this.supabaseChannel = this.supabaseClient
         .channel('minecare-operations')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'telemetry' }, (payload) => {
+          this.lastHeartbeatTimestamp = Date.now();
           this.handleIncomingPayload({
             schema: 'public',
             table: 'telemetry',
@@ -192,6 +210,7 @@ export class SupabaseRealtimeService {
           });
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'helmets' }, (payload) => {
+          this.lastHeartbeatTimestamp = Date.now();
           this.handleIncomingPayload({
             schema: 'public',
             table: 'helmets',
@@ -202,6 +221,7 @@ export class SupabaseRealtimeService {
           });
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, (payload) => {
+          this.lastHeartbeatTimestamp = Date.now();
           this.handleIncomingPayload({
             schema: 'public',
             table: 'alerts',
@@ -212,6 +232,7 @@ export class SupabaseRealtimeService {
           });
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'zone_assignments' }, (payload) => {
+          this.lastHeartbeatTimestamp = Date.now();
           this.handleIncomingPayload({
             schema: 'public',
             table: 'zone_assignments',
@@ -225,6 +246,7 @@ export class SupabaseRealtimeService {
           if (status === 'SUBSCRIBED') {
             this.setConnectionState('CONNECTED');
             this.reconnectAttempts = 0;
+            this.lastHeartbeatTimestamp = Date.now();
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || error) {
             console.error('[SupabaseRealtime] Connection error:', status, error);
             this.setConnectionState('ERROR');
@@ -264,6 +286,7 @@ export class SupabaseRealtimeService {
         this.eventSource = new EventSource(sseUrl);
 
         this.eventSource.addEventListener('status', (event: MessageEvent) => {
+          this.lastHeartbeatTimestamp = Date.now();
           try {
             const data = JSON.parse(event.data);
             if (data.status === 'CONNECTED') {
@@ -275,7 +298,12 @@ export class SupabaseRealtimeService {
           }
         });
 
+        this.eventSource.addEventListener('heartbeat', () => {
+          this.lastHeartbeatTimestamp = Date.now();
+        });
+
         this.eventSource.addEventListener('postgres_changes', (event: MessageEvent) => {
+          this.lastHeartbeatTimestamp = Date.now();
           try {
             const payload = JSON.parse(event.data) as PostgresChangesPayload;
             this.handleIncomingPayload(payload);
@@ -285,6 +313,7 @@ export class SupabaseRealtimeService {
         });
 
         this.eventSource.onopen = () => {
+          this.lastHeartbeatTimestamp = Date.now();
           this.setConnectionState('CONNECTED');
           this.reconnectAttempts = 0;
         };
@@ -319,8 +348,10 @@ export class SupabaseRealtimeService {
         this.inProcessUnsubscribe();
       }
       this.inProcessUnsubscribe = RealtimePublisher.getInstance().subscribe((payload) => {
+        this.lastHeartbeatTimestamp = Date.now();
         this.handleIncomingPayload(payload);
       });
+      this.lastHeartbeatTimestamp = Date.now();
       this.setConnectionState('CONNECTED');
       this.reconnectAttempts = 0;
     } catch {
@@ -328,12 +359,18 @@ export class SupabaseRealtimeService {
     }
   }
 
+  /**
+   * Schedule automatic reconnection with exponential backoff and jitter
+   */
   private scheduleReconnect(): void {
     if (this.isExplicitDisconnect) return;
     if (this.reconnectTimer) return;
 
     this.reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts - 1), 10000);
+    const baseDelay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts - 1), 10000);
+    // Add up to 15% random jitter to avoid thundering herd on server recovery
+    const jitter = baseDelay * (Math.random() * 0.15);
+    const delay = Math.round(baseDelay + jitter);
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -343,8 +380,98 @@ export class SupabaseRealtimeService {
     }, delay);
   }
 
+  public getReconnectAttempts(): number {
+    return this.reconnectAttempts;
+  }
+
   /**
-   * Disconnect and cleanup subscriptions
+   * Keepalive Watchdog: Monitors connection freshness and re-establishes dead/stale links
+   */
+  private startKeepaliveWatchdog(): void {
+    if (this.heartbeatWatchdogTimer) return;
+    this.heartbeatWatchdogTimer = setInterval(() => {
+      this.checkKeepalive();
+    }, 15000);
+
+    if (typeof this.heartbeatWatchdogTimer.unref === 'function') {
+      this.heartbeatWatchdogTimer.unref();
+    }
+  }
+
+  public checkKeepalive(): boolean {
+    if (this.connectionState === 'CONNECTED') {
+      const elapsed = Date.now() - this.lastHeartbeatTimestamp;
+      if (elapsed > this.heartbeatTimeoutMs) {
+        console.warn(`[SupabaseRealtimeService] Heartbeat watchdog timeout (${elapsed}ms > ${this.heartbeatTimeoutMs}ms). Stale connection detected, reconnecting.`);
+        this.setConnectionState('ERROR');
+        if (this.eventSource) {
+          this.eventSource.close();
+          this.eventSource = null;
+        }
+        this.scheduleReconnect();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  public recordHeartbeat(): void {
+    this.lastHeartbeatTimestamp = Date.now();
+  }
+
+  public getLastHeartbeat(): number {
+    return this.lastHeartbeatTimestamp;
+  }
+
+  public setHeartbeatTimeout(ms: number): void {
+    this.heartbeatTimeoutMs = ms;
+  }
+
+  /**
+   * Setup browser window network online/offline listeners
+   */
+  private setupNetworkListeners(): void {
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      if (!this.onlineListener) {
+        this.onlineListener = () => this.handleNetworkOnline();
+        window.addEventListener('online', this.onlineListener);
+      }
+      if (!this.offlineListener) {
+        this.offlineListener = () => this.handleNetworkOffline();
+        window.addEventListener('offline', this.offlineListener);
+      }
+    }
+  }
+
+  public handleNetworkOffline(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.setConnectionState('DISCONNECTED');
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+  }
+
+  public handleNetworkOnline(): void {
+    if (!this.isExplicitDisconnect) {
+      this.reconnectAttempts = 0;
+      this.connect();
+    }
+  }
+
+  public triggerOffline(): void {
+    this.handleNetworkOffline();
+  }
+
+  public triggerOnline(): void {
+    this.handleNetworkOnline();
+  }
+
+  /**
+   * Disconnect and cleanup active connections, timers, and listeners
    */
   public disconnect(): void {
     this.isExplicitDisconnect = true;
@@ -352,6 +479,11 @@ export class SupabaseRealtimeService {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+
+    if (this.heartbeatWatchdogTimer) {
+      clearInterval(this.heartbeatWatchdogTimer);
+      this.heartbeatWatchdogTimer = null;
     }
 
     if (this.supabaseChannel && this.supabaseClient) {
@@ -367,6 +499,17 @@ export class SupabaseRealtimeService {
     if (this.inProcessUnsubscribe) {
       this.inProcessUnsubscribe();
       this.inProcessUnsubscribe = null;
+    }
+
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      if (this.onlineListener) {
+        window.removeEventListener('online', this.onlineListener);
+        this.onlineListener = null;
+      }
+      if (this.offlineListener) {
+        window.removeEventListener('offline', this.offlineListener);
+        this.offlineListener = null;
+      }
     }
 
     this.setConnectionState('DISCONNECTED');
@@ -394,10 +537,36 @@ export class SupabaseRealtimeService {
     };
   }
 
+  public clearTableSubscribers(): void {
+    this.tableSubscribers.forEach((subs) => subs.clear());
+  }
+
+  public getTableSubscriberCount(table?: RealtimeTable): number {
+    if (table) {
+      return this.tableSubscribers.get(table)?.size || 0;
+    }
+    let total = 0;
+    this.tableSubscribers.forEach((subs) => {
+      total += subs.size;
+    });
+    return total;
+  }
+
+  /**
+   * Authoritative cleanup on user logout: disconnects stream, resets context and caches
+   */
+  public cleanupOnLogout(): void {
+    this.disconnect();
+    this.setUser(null);
+    this.clearDeduplicationCache();
+  }
+
   /**
    * Authoritative dispatch of payload to subscribers with deduplication and RBAC filtering
    */
   public handleIncomingPayload(payload: PostgresChangesPayload): void {
+    this.lastHeartbeatTimestamp = Date.now();
+
     // 1. Role-aware client filtering
     if (!this.isPayloadAuthorized(payload)) {
       return;
@@ -406,6 +575,7 @@ export class SupabaseRealtimeService {
     // 2. Deduplication check
     const eventKey = this.generateEventKey(payload);
     if (this.processedEventKeys.has(eventKey)) {
+      this.duplicateEventsDroppedCount++;
       return; // Already processed
     }
     this.processedEventKeys.add(eventKey);
@@ -428,12 +598,26 @@ export class SupabaseRealtimeService {
     }
   }
 
+  public getDuplicateEventsDroppedCount(): number {
+    return this.duplicateEventsDroppedCount;
+  }
+
+  public getProcessedEventCount(): number {
+    return this.processedEventKeys.size;
+  }
+
+  public clearDeduplicationCache(): void {
+    this.processedEventKeys.clear();
+    this.duplicateEventsDroppedCount = 0;
+  }
+
   private generateEventKey(payload: PostgresChangesPayload): string {
-    const rec = payload.new || {};
-    const id = rec.id || rec.packetId || rec.helmetId || rec.packet_id || '';
-    const ts = rec.timestamp || payload.commit_timestamp || '';
-    const status = rec.status || rec.safety_status || '';
-    return `${payload.table}_${payload.eventType}_${id}_${ts}_${status}`;
+    const rec = (payload.new || {}) as Record<string, unknown>;
+    const id = String(rec.id || rec.packetId || rec.helmetId || rec.packet_id || '');
+    const seq = rec.sequence_number !== undefined ? String(rec.sequence_number) : (rec.sequenceNumber !== undefined ? String(rec.sequenceNumber) : '');
+    const ts = String(rec.timestamp || payload.commit_timestamp || '');
+    const status = String(rec.status || rec.safety_status || '');
+    return `${payload.table}:${payload.eventType}:${id}:${seq}:${ts}:${status}`;
   }
 
   /**

@@ -236,6 +236,10 @@ export class MockTelemetryProvider implements ITelemetryProvider {
     });
   }
 
+  public getScenario(helmetId: string): ScenarioType | undefined {
+    return this.activeHelmets.get(helmetId)?.currentScenario;
+  }
+
   public tick(): void {
     const nowIso = new Date().toISOString();
 

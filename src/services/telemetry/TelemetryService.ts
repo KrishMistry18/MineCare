@@ -144,6 +144,14 @@ export class TelemetryService {
     this.realtimeUnsubscribers = [];
   }
 
+  public reattachRealtimeSubscriptions(): void {
+    this.setupRealtimeSubscriptions();
+  }
+
+  public getActiveSubscriptionCount(): number {
+    return this.realtimeUnsubscribers.length;
+  }
+
   public cleanup(): void {
     this.cleanupRealtime();
     this.provider.disconnect();

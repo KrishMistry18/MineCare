@@ -117,7 +117,7 @@ export class RealtimePublisher {
     }
   }
 
-  private sendHeartbeat(): void {
+  public sendHeartbeat(): void {
     if (this.sseClients.size === 0) {
       if (this.heartbeatTimer) {
         clearInterval(this.heartbeatTimer);
@@ -126,10 +126,14 @@ export class RealtimePublisher {
       return;
     }
 
+    const nowIso = new Date().toISOString();
     const comment = `: heartbeat ${Date.now()}\n\n`;
+    const event = `event: heartbeat\ndata: ${JSON.stringify({ timestamp: nowIso, clients: this.sseClients.size })}\n\n`;
+
     this.sseClients.forEach((client) => {
       try {
         client.res.write(comment);
+        client.res.write(event);
       } catch {
         this.sseClients.delete(client.id);
       }
@@ -138,6 +142,26 @@ export class RealtimePublisher {
 
   public getConnectedClientsCount(): number {
     return this.sseClients.size + this.listeners.size;
+  }
+
+  public getSseClientsCount(): number {
+    return this.sseClients.size;
+  }
+
+  public getListenersCount(): number {
+    return this.listeners.size;
+  }
+
+  public hasSseClient(id: string): boolean {
+    return this.sseClients.has(id);
+  }
+
+  public getSseClient(id: string): SseClient | undefined {
+    return this.sseClients.get(id);
+  }
+
+  public isHeartbeatActive(): boolean {
+    return this.heartbeatTimer !== null;
   }
 
   /**
@@ -198,29 +222,29 @@ export class RealtimePublisher {
 
     if (client.role === 'WORKER') {
       const { table, new: record } = payload;
-      const rec = record as Record<string, unknown>;
+      const rec = (record || {}) as Record<string, unknown>;
 
       switch (table) {
         case 'telemetry': {
-          const helmetId = String(rec.helmet_id || '');
+          const helmetId = String(rec.helmet_id || rec.helmetId || '');
           return Boolean(client.assignedHelmetId && helmetId === client.assignedHelmetId);
         }
 
         case 'helmets': {
-          const helmetId = String(rec.id || rec.helmet_code || '');
+          const helmetId = String(rec.id || rec.helmet_code || rec.helmetId || '');
           return Boolean(client.assignedHelmetId && helmetId === client.assignedHelmetId);
         }
 
         case 'alerts': {
-          const alertWorkerId = String(rec.worker_id || '');
-          const alertHelmetId = String(rec.helmet_id || '');
+          const alertWorkerId = String(rec.worker_id || rec.workerId || '');
+          const alertHelmetId = String(rec.helmet_id || rec.helmetId || '');
           const matchWorker = Boolean(client.workerId && alertWorkerId === client.workerId);
           const matchHelmet = Boolean(client.assignedHelmetId && alertHelmetId === client.assignedHelmetId);
           return matchWorker || matchHelmet;
         }
 
         case 'zone_assignments': {
-          const assignmentWorkerId = String(rec.worker_id || '');
+          const assignmentWorkerId = String(rec.worker_id || rec.workerId || '');
           return Boolean(client.workerId && assignmentWorkerId === client.workerId);
         }
 
