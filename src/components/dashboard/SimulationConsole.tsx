@@ -33,14 +33,23 @@ export const SimulationConsole: React.FC = () => {
   const activeScenarioType = activeScenarios[selectedHelmetId] || 'SAFE';
   const activeScenarioObj = scenarios.find(s => s.type === activeScenarioType) || scenarios[0];
 
-  const handleRun = () => {
-    triggerScenario(selectedScenario, selectedHelmetId);
-    setActiveScenarios(prev => ({
-      ...prev,
-      [selectedHelmetId]: selectedScenario === 'RECOVERY' ? 'SAFE' : selectedScenario,
-    }));
-    setIsTriggered(true);
-    setTimeout(() => setIsTriggered(false), 1400);
+  const [isExecuting, setIsExecuting] = useState<boolean>(false);
+
+  const handleRun = async () => {
+    setIsExecuting(true);
+    try {
+      await triggerScenario(selectedScenario, selectedHelmetId);
+      setActiveScenarios(prev => ({
+        ...prev,
+        [selectedHelmetId]: selectedScenario === 'RECOVERY' ? 'SAFE' : selectedScenario,
+      }));
+      setIsTriggered(true);
+      setTimeout(() => setIsTriggered(false), 1400);
+    } catch (err) {
+      console.error('[SimulationConsole] Scenario trigger failed:', err);
+    } finally {
+      setIsExecuting(false);
+    }
   };
 
   return (
@@ -106,13 +115,16 @@ export const SimulationConsole: React.FC = () => {
       <div className="pt-1 flex items-center justify-between gap-3">
         <button
           onClick={handleRun}
+          disabled={isExecuting}
           className={`w-full sm:w-auto px-4 py-1.5 text-white text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-            isTriggered 
+            isExecuting
+              ? 'bg-slate-700 cursor-not-allowed opacity-70'
+              : isTriggered 
               ? 'bg-emerald-600 hover:bg-emerald-500' 
               : 'bg-[#0284c7] hover:bg-[#0369a1]'
           }`}
         >
-          {isTriggered ? `Triggered on ${selectedHelmetId}` : `Run scenario on ${selectedHelmetId}`}
+          {isExecuting ? 'Running simulation...' : isTriggered ? `Triggered on ${selectedHelmetId}` : `Run scenario on ${selectedHelmetId}`}
         </button>
         <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
           Target: <strong className="text-slate-200">{selectedHelmetId}</strong>

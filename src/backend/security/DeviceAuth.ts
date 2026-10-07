@@ -86,6 +86,16 @@ export class DeviceAuthManager {
 
     // 1. Hardware Device Token Authentication (ESP8266 & Hardware Gateway)
     if (deviceToken) {
+      // 1.0 Explicitly reject human Bearer JWT passed as hardware device token
+      if (deviceToken.startsWith('Bearer ') || deviceToken.startsWith('eyJ')) {
+        return {
+          isAuthenticated: false,
+          statusCode: 401,
+          authType: 'DEVICE_TOKEN',
+          error: 'Unauthorized: Human JWT cannot be used as hardware device token',
+        };
+      }
+
       // 1.1 Revocation Check
       if (this.isTokenRevoked(deviceToken)) {
         return {
@@ -152,6 +162,14 @@ export class DeviceAuthManager {
 
     // 2. Authenticated User Session (Operator / Admin / Supervisor Override)
     if (currentUser) {
+      if (isProduction) {
+        return {
+          isAuthenticated: false,
+          statusCode: 401,
+          authType: 'USER_SESSION',
+          error: 'Unauthorized: Human user session cannot be used as device credentials. Telemetry ingestion requires valid X-Device-Token.',
+        };
+      }
       if (currentUser.role === 'ADMIN' || currentUser.role === 'SUPERVISOR') {
         return {
           isAuthenticated: true,

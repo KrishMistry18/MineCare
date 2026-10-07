@@ -11,3 +11,4 @@ export * from './telemetryService';
 export * from './systemService';
 export * from './authService';
 export * from './analyticsService';
+export * from './simulationService';

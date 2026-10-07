@@ -18,10 +18,6 @@ import type { HelmetTelemetryPacket, ScenarioType } from '../../types/telemetry'
 import { SafetyEvaluator } from './SafetyEvaluator';
 import { INITIAL_WORKERS } from '../../data/mockData';
 import { telemetryApiService } from '../api/telemetryService';
-import { DatabaseRepository } from '../../backend/db/DatabaseRepository';
-import { SafetyEngine } from '../../backend/safety/SafetyEngine';
-import { AlertEngine } from '../../backend/alerts/AlertEngine';
-import { RealtimePublisher } from '../../backend/realtime/RealtimePublisher';
 
 interface HelmetSimState {
   helmetId: string;
@@ -413,81 +409,39 @@ export class MockTelemetryProvider implements ITelemetryProvider {
         batteryVolts: Number(state.battery),
       };
 
-      // Ingest through authoritative Telemetry API (/api/v1/telemetry)
-      telemetryApiService
-        .sendTelemetry({
-          packetId: packet.packetId,
-          helmetId: packet.helmetId,
-          timestamp: packet.timestamp,
-          sequenceNumber: packet.sequenceNumber,
-          temperature: packet.dht22.temperature,
-          humidity: packet.dht22.humidity,
-          gasValue: packet.mq2.rawGasValue,
-          accelX: packet.mpu6050.accelX,
-          accelY: packet.mpu6050.accelY,
-          accelZ: packet.mpu6050.accelZ,
-          totalAcceleration: packet.mpu6050.totalAcceleration,
-          gyroX: packet.mpu6050.gyroX,
-          gyroY: packet.mpu6050.gyroY,
-          gyroZ: packet.mpu6050.gyroZ,
-          fallDetected: packet.fallDetected,
-          sosPressed: packet.sosPressed,
-          batteryVolts: packet.batteryVolts,
-          rssi: packet.rssi,
-        })
-        .catch(() => {
-          // Graceful fallback for offline / test environments
-          try {
-            const db = DatabaseRepository.getInstance();
-            const safety = SafetyEngine.evaluate({
-              temperature: packet.dht22.temperature,
-              gasValue: packet.mq2.rawGasValue,
-              totalAcceleration: packet.mpu6050.totalAcceleration,
-              sosPressed: packet.sosPressed,
-            });
+      // In production browser environments, telemetry ingestion is authoritative
+      // via physical hardware nodes or authorized server-side scenario simulation (/api/v1/simulation/scenario).
+      // In local development / test mode, attempt local ingestion if available.
+      const isBrowserProduction =
+        typeof window !== 'undefined' &&
+        (Boolean(import.meta.env?.PROD) || Boolean(import.meta.env?.VITE_API_URL));
 
-            const telemetryRecord = {
-              id: packet.packetId,
-              helmet_id: packet.helmetId,
-              timestamp: packet.timestamp,
-              sequence_number: packet.sequenceNumber,
-              temperature: packet.dht22.temperature,
-              humidity: packet.dht22.humidity,
-              gas_value: packet.mq2.rawGasValue,
-              acceleration_x: packet.mpu6050.accelX,
-              acceleration_y: packet.mpu6050.accelY,
-              acceleration_z: packet.mpu6050.accelZ,
-              total_acceleration: packet.mpu6050.totalAcceleration,
-              gyro_x: packet.mpu6050.gyroX,
-              gyro_y: packet.mpu6050.gyroY,
-              gyro_z: packet.mpu6050.gyroZ,
-              fall_detected: packet.fallDetected,
-              sos_pressed: packet.sosPressed,
-              safety_status: safety.status,
-              created_at: new Date().toISOString(),
-            };
-
-            db.saveTelemetry(telemetryRecord);
-
-            const helmet = db.getHelmetWithDetails(packet.helmetId);
-            const alertResult = AlertEngine.processAlerts(
-              db.getAlertsStore(),
-              packet.helmetId,
-              helmet?.worker_id || null,
-              packet as any,
-              safety
-            );
-
-            // Publish authoritative changes to Realtime broker
-            const pub = RealtimePublisher.getInstance();
-            pub.publish('telemetry', 'INSERT', telemetryRecord);
-            if (helmet) pub.publish('helmets', 'UPDATE', helmet);
-            if (alertResult.createdAlert) pub.publish('alerts', 'INSERT', alertResult.createdAlert);
-            alertResult.resolvedAlerts.forEach((r) => pub.publish('alerts', 'UPDATE', r));
-          } catch {
-            // Ignore offline fallback error
-          }
-        });
+      if (!isBrowserProduction) {
+        telemetryApiService
+          .sendTelemetry({
+            packetId: packet.packetId,
+            helmetId: packet.helmetId,
+            timestamp: packet.timestamp,
+            sequenceNumber: packet.sequenceNumber,
+            temperature: packet.dht22.temperature,
+            humidity: packet.dht22.humidity,
+            gasValue: packet.mq2.rawGasValue,
+            accelX: packet.mpu6050.accelX,
+            accelY: packet.mpu6050.accelY,
+            accelZ: packet.mpu6050.accelZ,
+            totalAcceleration: packet.mpu6050.totalAcceleration,
+            gyroX: packet.mpu6050.gyroX,
+            gyroY: packet.mpu6050.gyroY,
+            gyroZ: packet.mpu6050.gyroZ,
+            fallDetected: packet.fallDetected,
+            sosPressed: packet.sosPressed,
+            batteryVolts: packet.batteryVolts,
+            rssi: packet.rssi,
+          })
+          .catch(() => {
+            // Local fallback ignored in offline test mode
+          });
+      }
 
       // Notify any local provider subscribers
       this.subscribers.forEach((cb) => {

@@ -27,7 +27,7 @@ export interface TelemetryContextValue {
   getTelemetryHistory: (helmetId: string) => TelemetryHistoryPoint[];
   acknowledgeAlert: (alertId: string) => void;
   resolveAlert: (alertId: string, notes?: string) => void;
-  triggerScenario: (scenario: ScenarioType, helmetId?: string) => void;
+  triggerScenario: (scenario: ScenarioType, helmetId?: string) => Promise<void> | void;
   audioMuted: boolean;
   toggleAudioMute: () => void;
   activeDangerCount: number;

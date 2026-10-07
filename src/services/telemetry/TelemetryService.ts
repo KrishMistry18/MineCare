@@ -21,6 +21,7 @@ import type { HelmetDevice, ConnectivityStatus } from '../../types/helmet';
 import type { SafetyAlert } from '../../types/alert';
 import { ZoneAssignmentProvider } from '../zones/ZoneAssignmentProvider';
 import { alertService } from '../api/alertService';
+import { simulationService } from '../api/simulationService';
 import {
   SupabaseRealtimeService,
   type RealtimeConnectionState,
@@ -464,9 +465,15 @@ export class TelemetryService {
     alertService.resolveAlert(alertId, notes).catch(() => {});
   }
 
-  public triggerScenario(scenario: ScenarioType, helmetId?: string): void {
-    if (this.provider.triggerScenario) {
-      this.provider.triggerScenario(scenario, helmetId);
+  public async triggerScenario(scenario: ScenarioType, helmetId?: string): Promise<void> {
+    const targetHelmetId = helmetId || 'MC-001';
+    try {
+      await simulationService.runScenario(scenario, targetHelmetId);
+    } catch (err) {
+      console.warn('[TelemetryService] Server-side simulation request failed, running provider fallback:', err);
+      if (this.provider.triggerScenario) {
+        this.provider.triggerScenario(scenario, targetHelmetId);
+      }
     }
   }
 

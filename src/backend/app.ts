@@ -14,6 +14,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'http';
+import { Readable } from 'stream';
 import type { IDatabaseRepository } from './db/repositories/interfaces';
 import { PostgresDatabaseRepository } from './db/repositories/PostgresDatabaseRepository';
 import { DatabaseRepository } from './db/DatabaseRepository';
@@ -23,6 +24,7 @@ import { AlertEngine } from './alerts/AlertEngine';
 import { OfflineEngine } from './offline/OfflineEngine';
 import { AuthManager } from './auth/AuthManager';
 import { RealtimePublisher } from './realtime/RealtimePublisher';
+import { SimulationEngine } from './simulation/SimulationEngine';
 import { AnalyticsEngine, type AnalyticsOverviewResult } from './analytics/AnalyticsEngine';
 import type { DbTelemetry, UserRole, DbUserProfile } from './types';
 import { getBackendConfig } from './config/env';
@@ -547,6 +549,121 @@ export class BackendApp {
       if (pathname === '/api/v1/system/health' && method === 'GET') {
         const health = await this.db.getSystemHealth();
         this.sendJson(res, 200, health);
+        return true;
+      }
+
+      // =========================================================================
+      // 3.1 SIMULATION SCENARIO INGESTION (Supervisor / Admin Simulation)
+      // =========================================================================
+      if (pathname === '/api/v1/simulation/scenario' && method === 'POST') {
+        const body = await this.readJsonBody(req, pathname);
+        if (body._tooLarge) {
+          this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+
+        // 1. Authorization: Only authenticated SUPERVISOR or ADMIN can trigger simulation
+        const currentUser = await this.authManager.authenticateRequest(req);
+        if (!currentUser) {
+          this.sendJson(res, 401, ApiError.unauthorized(requestId, 'Authentication required to trigger simulation scenario'));
+          return true;
+        }
+
+        if (currentUser.role !== 'ADMIN' && currentUser.role !== 'SUPERVISOR') {
+          this.sendJson(
+            res,
+            403,
+            ApiError.forbidden(requestId, 'Forbidden: Only supervisors and administrators may trigger simulation scenarios')
+          );
+          return true;
+        }
+
+        // 2. Validate Target Helmet ID in Commissioned Fleet
+        const helmetId = typeof body.helmetId === 'string' ? body.helmetId.trim() : 'MC-001';
+        const helmet = await this.db.getHelmet(helmetId);
+        if (!helmet) {
+          this.sendJson(res, 404, ApiError.notFound(requestId, `Target helmet ${helmetId} not found in commissioned fleet`));
+          return true;
+        }
+
+        const rawScenario = typeof body.scenario === 'string' ? body.scenario.trim() : 'HIGH_GAS';
+        const scenario = SimulationEngine.normalizeScenario(rawScenario);
+
+        // 3. Handle OFFLINE scenario directly if requested
+        if (scenario === 'HELMET_OFFLINE') {
+          await this.db.updateHelmet(helmetId, { online: false });
+          const updatedHelmet = await this.db.getHelmetWithDetails(helmetId);
+          if (updatedHelmet) {
+            RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
+          }
+          this.sendJson(res, 200, {
+            success: true,
+            simulation: true,
+            scenario: 'HELMET_OFFLINE',
+            helmetId,
+            online: false,
+          });
+          return true;
+        }
+
+        // 4. Generate Telemetry Packet Server-Side
+        const packet = SimulationEngine.buildScenarioPacket(helmetId, scenario);
+
+        // 5. Ingest through production telemetry ingestion boundary (/api/v1/telemetry)
+        // using the bound simulated device credential X-Device-Token: mc_dev_${helmetId}
+        const packetBuffer = Buffer.from(JSON.stringify(packet));
+        const stream = Readable.from(packetBuffer);
+        const simReq = Object.assign(stream, {
+          method: 'POST',
+          url: '/api/v1/telemetry',
+          headers: {
+            host: req.headers.host || 'localhost:3001',
+            'content-type': 'application/json',
+            'content-length': String(packetBuffer.length),
+            'x-device-token': `mc_dev_${helmetId}`,
+            'x-request-id': requestId,
+          },
+          socket: req.socket || { remoteAddress: clientIp },
+        }) as unknown as IncomingMessage;
+
+        const resChunks: Buffer[] = [];
+        let simStatusCode = 200;
+        const simHeaders: Record<string, string> = {};
+
+        const simRes = {
+          statusCode: 200,
+          setHeader: (name: string, value: string) => {
+            simHeaders[name.toLowerCase()] = value;
+          },
+          getHeader: (name: string) => simHeaders[name.toLowerCase()],
+          getHeaders: () => simHeaders,
+          write: (chunk: any) => {
+            if (chunk) resChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            return true;
+          },
+          end: (chunk?: any) => {
+            if (chunk) resChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          },
+        } as unknown as ServerResponse;
+
+        await this.handleRequest(simReq, simRes);
+        simStatusCode = simRes.statusCode || 200;
+
+        let parsedResponse: any = null;
+        try {
+          const bodyStr = Buffer.concat(resChunks).toString('utf-8');
+          parsedResponse = JSON.parse(bodyStr);
+        } catch {
+          parsedResponse = { status: simStatusCode };
+        }
+
+        this.sendJson(res, simStatusCode === 201 ? 201 : simStatusCode, {
+          success: simStatusCode === 201,
+          simulation: true,
+          scenario,
+          helmetId,
+          ...parsedResponse,
+        });
         return true;
       }
 
