@@ -412,11 +412,9 @@ export class MockTelemetryProvider implements ITelemetryProvider {
       // In production browser environments, telemetry ingestion is authoritative
       // via physical hardware nodes or authorized server-side scenario simulation (/api/v1/simulation/scenario).
       // In local development / test mode, attempt local ingestion if available.
-      const isBrowserProduction =
-        typeof window !== 'undefined' &&
-        (Boolean(import.meta.env?.PROD) || Boolean(import.meta.env?.VITE_API_URL));
-
-      if (!isBrowserProduction) {
+      // In browser runtime, telemetry is NEVER directly posted by the frontend client;
+      // it is ingested by hardware IoT nodes or server-side simulation (/api/v1/simulation/scenario).
+      if (typeof window === 'undefined') {
         telemetryApiService
           .sendTelemetry({
             packetId: packet.packetId,

@@ -47,6 +47,7 @@ import {
   RefreshCw,
   Info,
   CheckCircle2,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTelemetry } from '../../context/TelemetryContext';
@@ -236,10 +237,10 @@ export const AnalyticsPage: React.FC = () => {
                 className="bg-[#060a12] border border-[#1e2a3c] rounded-md px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-cyan-500"
               >
                 <option value="ALL">All Underground Zones</option>
-                <option value="portal-surface">Portal / Surface</option>
-                <option value="level-1-north-drift">Level 1 — North Drift</option>
-                <option value="level-2-south-panel">Level 2 — South Panel</option>
-                <option value="level-3-haul-road">Level 3 — Haul Road</option>
+                <option value="zone-portal-surface">Portal / Surface</option>
+                <option value="zone-level-1-north-drift">Level 1 — North Drift</option>
+                <option value="zone-level-2-south-panel">Level 2 — South Panel</option>
+                <option value="zone-level-3-haul-road">Level 3 — Haul Road</option>
               </select>
             </div>
 
@@ -293,6 +294,15 @@ export const AnalyticsPage: React.FC = () => {
           >
             Retry
           </button>
+        </div>
+      )}
+
+      {/* Loading Skeleton */}
+      {loading && !overview && (
+        <div className="bg-[#090f19] border border-[#162133] rounded-xl p-12 flex flex-col items-center justify-center space-y-3">
+          <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+          <div className="text-sm font-mono text-slate-300">Synchronizing historical analytics & intelligence ledger...</div>
+          <div className="text-xs text-slate-500">Querying authoritative telemetry, alerts, and zone movements</div>
         </div>
       )}
 

@@ -34,9 +34,11 @@ export const SimulationConsole: React.FC = () => {
   const activeScenarioObj = scenarios.find(s => s.type === activeScenarioType) || scenarios[0];
 
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleRun = async () => {
     setIsExecuting(true);
+    setErrorMessage(null);
     try {
       await triggerScenario(selectedScenario, selectedHelmetId);
       setActiveScenarios(prev => ({
@@ -44,9 +46,12 @@ export const SimulationConsole: React.FC = () => {
         [selectedHelmetId]: selectedScenario === 'RECOVERY' ? 'SAFE' : selectedScenario,
       }));
       setIsTriggered(true);
-      setTimeout(() => setIsTriggered(false), 1400);
-    } catch (err) {
+      setTimeout(() => setIsTriggered(false), 2500);
+    } catch (err: unknown) {
       console.error('[SimulationConsole] Scenario trigger failed:', err);
+      const msg = err instanceof Error ? err.message : 'Simulation execution failed';
+      setErrorMessage(msg);
+      setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setIsExecuting(false);
     }
@@ -124,12 +129,18 @@ export const SimulationConsole: React.FC = () => {
               : 'bg-[#0284c7] hover:bg-[#0369a1]'
           }`}
         >
-          {isExecuting ? 'Running simulation...' : isTriggered ? `Triggered on ${selectedHelmetId}` : `Run scenario on ${selectedHelmetId}`}
+          {isExecuting ? 'Running simulation...' : isTriggered ? `Scenario accepted on ${selectedHelmetId}` : `Run scenario on ${selectedHelmetId}`}
         </button>
         <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
           Target: <strong className="text-slate-200">{selectedHelmetId}</strong>
         </span>
       </div>
+
+      {errorMessage && (
+        <div className="p-2 rounded bg-red-950/40 border border-red-500/50 text-red-200 text-[11px] font-mono">
+          {errorMessage}
+        </div>
+      )}
 
       {/* Scenario Explanatory Caption */}
       <div className="text-[11px] text-slate-400 font-mono pt-0.5">

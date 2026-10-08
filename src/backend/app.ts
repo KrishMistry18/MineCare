@@ -60,14 +60,18 @@ export class BackendApp {
     this.authManager = AuthManager.getInstance(this.db);
 
     // Check offline heartbeats every 3 seconds
-    if (typeof setInterval !== 'undefined') {
+    if (typeof setInterval !== 'undefined' && !config.isTest) {
+      let isCheckingHeartbeats = false;
       this.heartbeatTimer = setInterval(async () => {
+        if (isCheckingHeartbeats) return;
+        isCheckingHeartbeats = true;
         try {
           const helmets = await this.db.getRawHelmets();
-          const alerts = await this.db.getAlertsStore();
+          const alerts = await this.db.getActiveAlerts();
           const { statusChanges, newAlerts, resolvedAlerts } = OfflineEngine.checkFleetHeartbeats(helmets, alerts);
 
           for (const sc of statusChanges) {
+            await this.db.updateHelmet(sc.helmetId, { online: sc.state === 'ONLINE' });
             const helmet = await this.db.getHelmetWithDetails(sc.helmetId);
             if (helmet) {
               RealtimePublisher.getInstance().publish('helmets', 'UPDATE', helmet);
@@ -85,6 +89,8 @@ export class BackendApp {
           }
         } catch {
           // ignore background heartbeat error
+        } finally {
+          isCheckingHeartbeats = false;
         }
       }, 3000);
 
@@ -470,10 +476,15 @@ export class BackendApp {
         };
 
         await this.db.saveTelemetry(telemetryRecord);
+        await this.db.updateHelmet(packet.helmetId, {
+          status: safety.status,
+          online: true,
+          last_seen: packet.timestamp,
+        });
 
         // Authoritative Alert Lifecycle
         const helmet = await this.db.getHelmet(packet.helmetId);
-        const existingAlerts = await this.db.getAlertsStore();
+        const existingAlerts = await this.db.getActiveAlerts();
         const alertResult = AlertEngine.processAlerts(
           existingAlerts,
           packet.helmetId,
@@ -657,11 +668,23 @@ export class BackendApp {
           parsedResponse = { status: simStatusCode };
         }
 
+        const updatedHelmet = await this.db.getHelmetWithDetails(helmetId);
+        const latestTelemetry = await this.db.getLatestTelemetry(helmetId);
+        const activeAlerts = await this.db.getActiveAlerts();
+        const helmetActiveAlerts = activeAlerts.filter((a) => a.helmet_id === helmetId);
+
+        const returnedAlerts = parsedResponse.alert
+          ? [parsedResponse.alert, ...helmetActiveAlerts.filter((a) => a.id !== parsedResponse.alert.id)]
+          : helmetActiveAlerts;
+
         this.sendJson(res, simStatusCode === 201 ? 201 : simStatusCode, {
           success: simStatusCode === 201,
           simulation: true,
           scenario,
           helmetId,
+          telemetry: latestTelemetry,
+          helmet: updatedHelmet,
+          alerts: returnedAlerts,
           ...parsedResponse,
         });
         return true;

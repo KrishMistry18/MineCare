@@ -109,7 +109,9 @@ export class DatabaseMigrator {
           // Remove CREATE POLICY ... ;
           .replace(/CREATE\s+POLICY\s+"[^"]+"\s+ON\s+[^;]+;/gis, '-- skipped policy for pg-mem')
           // Remove DROP POLICY ... ;
-          .replace(/DROP\s+POLICY\s+IF\s+EXISTS\s+"[^"]+"\s+ON\s+[^;]+;/gis, '-- skipped drop policy for pg-mem');
+          .replace(/DROP\s+POLICY\s+IF\s+EXISTS\s+"[^"]+"\s+ON\s+[^;]+;/gis, '-- skipped drop policy for pg-mem')
+          // Remove DO $$ ... $$; blocks unsupported by pg-mem
+          .replace(/DO\s+\$\$[\s\S]*?\$\$;/gis, '-- skipped do block for pg-mem');
       } else {
         sanitizedSql = sanitizedSql
           .split('\n')
@@ -120,7 +122,12 @@ export class DatabaseMigrator {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query(sanitizedSql);
+        const hasExecutableSql = sanitizedSql
+          .split('\n')
+          .some((line) => line.trim() && !line.trim().startsWith('--'));
+        if (hasExecutableSql) {
+          await client.query(sanitizedSql);
+        }
         await client.query(
           'INSERT INTO public.schema_migrations (version, name, applied_at) VALUES ($1, $2, NOW())',
           [version, file]

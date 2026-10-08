@@ -83,6 +83,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         worker_id: user.worker_id,
       });
       service.getRealtimeService().connect();
+      void service.loadInitialState();
     }
   }, [user, service]);
 

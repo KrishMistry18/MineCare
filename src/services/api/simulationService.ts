@@ -7,6 +7,7 @@
 
 import { apiRequest } from './apiClient';
 import type { ScenarioType } from '../../types/telemetry';
+import type { HazardTrigger } from '../../types/safety';
 
 export interface SimulationScenarioResponse {
   success: boolean;
@@ -16,7 +17,7 @@ export interface SimulationScenarioResponse {
   packetId?: string;
   safety?: {
     status: 'SAFE' | 'WARNING' | 'DANGER';
-    primaryTrigger: string;
+    primaryTrigger: HazardTrigger;
     triggerDetails: string[];
     outputs: {
       greenLed: boolean;
@@ -26,6 +27,11 @@ export interface SimulationScenarioResponse {
   };
   alertCreated?: boolean;
   alertsResolvedCount?: number;
+  alert?: any;
+  resolvedAlerts?: any[];
+  telemetry?: any;
+  helmet?: any;
+  alerts?: any[];
 }
 
 export const simulationService = {

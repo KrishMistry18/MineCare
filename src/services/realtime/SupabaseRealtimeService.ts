@@ -165,7 +165,11 @@ export class SupabaseRealtimeService {
    * Set user role authorization context for real-time isolation
    */
   public setUser(user: { role: UserRole; worker_id?: string | null; assignedHelmetId?: string | null } | null): void {
+    const prevUser = this.currentUser;
     this.currentUser = user;
+    if (user && user !== prevUser && typeof window !== 'undefined') {
+      this.connectLocalEventBus();
+    }
   }
 
   /**
@@ -182,10 +186,12 @@ export class SupabaseRealtimeService {
     this.setupNetworkListeners();
     this.startKeepaliveWatchdog();
 
+    // 1. Authoritative Backend Event Bus via SSE
+    this.connectLocalEventBus();
+
+    // 2. Remote Supabase Realtime Channel (if configured)
     if (this.isSupabaseConfigured && this.supabaseClient) {
       this.connectRemoteSupabase();
-    } else {
-      this.connectLocalEventBus();
     }
   }
 

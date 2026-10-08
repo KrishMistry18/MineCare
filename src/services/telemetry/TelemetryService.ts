@@ -21,6 +21,7 @@ import type { HelmetDevice, ConnectivityStatus } from '../../types/helmet';
 import type { SafetyAlert } from '../../types/alert';
 import { ZoneAssignmentProvider } from '../zones/ZoneAssignmentProvider';
 import { alertService } from '../api/alertService';
+import { helmetService } from '../api/helmetService';
 import { simulationService } from '../api/simulationService';
 import {
   SupabaseRealtimeService,
@@ -98,8 +99,38 @@ export class TelemetryService {
       this.notifyListeners();
     });
 
-    // 4. Connect telemetry provider simulator
+    // 4. Connect telemetry provider simulator and subscribe
+    this.provider.subscribeAll((packet) => {
+      this.handleRealtimeTelemetry(packet);
+    });
     this.provider.connect();
+
+    // 5. Asynchronously load initial authoritative helmets and active alerts
+    void this.loadInitialState();
+  }
+
+  public async loadInitialState(): Promise<void> {
+    try {
+      const [dbHelmets, dbAlerts] = await Promise.allSettled([
+        helmetService.getHelmets(),
+        alertService.getActiveAlerts(),
+      ]);
+
+      if (dbHelmets.status === 'fulfilled' && Array.isArray(dbHelmets.value)) {
+        dbHelmets.value.forEach((h) => this.handleRealtimeHelmet(h));
+      }
+
+      if (dbAlerts.status === 'fulfilled' && Array.isArray(dbAlerts.value)) {
+        this.alerts = dbAlerts.value.map((a) => {
+          const worker = this.zoneProvider.getWorkerByHelmetId(a.helmet_id);
+          return this.convertDbAlertToSafetyAlert(a, worker?.name, worker?.currentWorkZone || undefined);
+        });
+      }
+
+      this.notifyListeners();
+    } catch {
+      // Fallback gracefully
+    }
   }
 
   /**
@@ -161,31 +192,47 @@ export class TelemetryService {
 
   // --- Realtime Event Handlers ---
 
-  private handleRealtimeTelemetry(row: DbTelemetry): void {
-    const helmetId = row.helmet_id;
+  private handleRealtimeTelemetry(row: DbTelemetry | any): void {
+    const helmetId = row.helmet_id || row.helmetId;
+    if (!helmetId) return;
+
+    const gasVal = Number(row.gas_value ?? row.mq2?.rawGasValue ?? row.gasConcentration ?? 200);
+    const tempVal = Number(row.temperature ?? row.dht22?.temperature ?? 26.5);
+    const humidityVal = Number(row.humidity ?? row.dht22?.humidity ?? 55.0);
+    const isSos = Boolean(row.sos_pressed ?? row.sosPressed ?? false);
+    const isFall = Boolean(row.fall_detected ?? row.fallDetected ?? false);
+    const totalAccel = Number(row.total_acceleration ?? row.mpu6050?.totalAcceleration ?? 9.81);
+
+    const derivedStatus = (isSos || isFall || totalAccel > 15)
+      ? 'DANGER'
+      : (gasVal > 800 || tempVal > 40)
+      ? 'WARNING'
+      : 'SAFE';
+    const safetyStatus = (row.safety_status || row.safetyStatus || row.status || derivedStatus) as any;
+
     const packet: HelmetTelemetryPacket = {
-      packetId: row.id,
+      packetId: row.id || row.packetId || `PKT-${helmetId}-${Date.now()}`,
       helmetId,
-      timestamp: row.timestamp,
-      sequenceNumber: Number(row.sequence_number),
-      dht22: { temperature: Number(row.temperature), humidity: Number(row.humidity) },
-      mq2: { rawGasValue: Number(row.gas_value) },
+      timestamp: row.timestamp || new Date().toISOString(),
+      sequenceNumber: Number(row.sequence_number ?? row.sequenceNumber ?? 0),
+      dht22: { temperature: tempVal, humidity: humidityVal },
+      mq2: { rawGasValue: gasVal },
       mpu6050: {
-        accelX: Number(row.acceleration_x),
-        accelY: Number(row.acceleration_y),
-        accelZ: Number(row.acceleration_z),
-        totalAcceleration: Number(row.total_acceleration),
-        gyroX: Number(row.gyro_x),
-        gyroY: Number(row.gyro_y),
-        gyroZ: Number(row.gyro_z),
+        accelX: Number(row.acceleration_x ?? row.mpu6050?.accelX ?? 0),
+        accelY: Number(row.acceleration_y ?? row.mpu6050?.accelY ?? 0),
+        accelZ: Number(row.acceleration_z ?? row.mpu6050?.accelZ ?? 9.81),
+        totalAcceleration: totalAccel,
+        gyroX: Number(row.gyro_x ?? row.mpu6050?.gyroX ?? 0),
+        gyroY: Number(row.gyro_y ?? row.mpu6050?.gyroY ?? 0),
+        gyroZ: Number(row.gyro_z ?? row.mpu6050?.gyroZ ?? 0),
       },
-      sosPressed: Boolean(row.sos_pressed),
-      fallDetected: Boolean(row.fall_detected),
+      sosPressed: isSos,
+      fallDetected: isFall,
       sensorHealth: { dht22: true, mq2: true, mpu6050: true },
       outputs: {
-        greenLed: row.safety_status === 'SAFE',
-        redLed: row.safety_status === 'DANGER',
-        buzzer: row.safety_status === 'DANGER',
+        greenLed: safetyStatus === 'SAFE',
+        redLed: safetyStatus === 'DANGER',
+        buzzer: safetyStatus === 'DANGER',
       },
       rssi: -65,
       batteryVolts: 4.1,
@@ -197,24 +244,24 @@ export class TelemetryService {
 
     // Update authoritative safety state
     this.safetyStates.set(helmetId, {
-      status: row.safety_status,
+      status: safetyStatus,
       primaryTrigger:
-        row.safety_status === 'SAFE'
+        safetyStatus === 'SAFE'
           ? 'NOMINAL'
-          : row.sos_pressed
+          : isSos
           ? 'SOS_BUTTON_TRIGGERED'
-          : row.fall_detected || row.total_acceleration > 15
+          : isFall || totalAccel > 15
           ? 'FALL_IMPACT_DETECTED'
-          : row.gas_value > 800 && row.temperature > 40
+          : gasVal > 800 && tempVal > 40
           ? 'MULTIPLE_HAZARDS'
-          : row.gas_value > 800
+          : gasVal > 800
           ? 'HIGH_RAW_GAS_LEVEL'
           : 'HIGH_TEMPERATURE',
       triggerDetails: [],
       outputs: {
-        greenLed: row.safety_status === 'SAFE',
-        redLed: row.safety_status === 'DANGER',
-        buzzer: row.safety_status === 'DANGER',
+        greenLed: safetyStatus === 'SAFE',
+        redLed: safetyStatus === 'DANGER',
+        buzzer: safetyStatus === 'DANGER',
       },
       isPrototypeNotice: true,
     });
@@ -253,9 +300,10 @@ export class TelemetryService {
     this.notifyListeners();
   }
 
-  private handleRealtimeHelmet(row: DbHelmet): void {
-    const helmetId = row.id || row.helmet_code;
-    const isOnline = Boolean(row.online);
+  private handleRealtimeHelmet(row: DbHelmet | any): void {
+    const helmetId = row.id || row.helmet_code || row.helmetId;
+    if (!helmetId) return;
+    const isOnline = Boolean(row.online !== undefined ? row.online : row.is_online ?? true);
 
     this.connectivityStates.set(helmetId, isOnline ? 'ONLINE' : 'OFFLINE');
 
@@ -279,8 +327,9 @@ export class TelemetryService {
     this.notifyListeners();
   }
 
-  private handleRealtimeAlert(row: DbAlert, eventType: string): void {
-    const worker = this.zoneProvider.getWorkerByHelmetId(row.helmet_id);
+  private handleRealtimeAlert(row: DbAlert | any, eventType: string): void {
+    const helmetId = row.helmet_id || row.helmetId;
+    const worker = this.zoneProvider.getWorkerByHelmetId(helmetId);
     const alert = this.convertDbAlertToSafetyAlert(row, worker?.name, worker?.currentWorkZone || undefined);
 
     const existingIndex = this.alerts.findIndex((a) => a.id === row.id);
@@ -467,13 +516,52 @@ export class TelemetryService {
 
   public async triggerScenario(scenario: ScenarioType, helmetId?: string): Promise<void> {
     const targetHelmetId = helmetId || 'MC-001';
-    try {
-      await simulationService.runScenario(scenario, targetHelmetId);
-    } catch (err) {
-      console.warn('[TelemetryService] Server-side simulation request failed, running provider fallback:', err);
-      if (this.provider.triggerScenario) {
-        this.provider.triggerScenario(scenario, targetHelmetId);
+
+    // 1. Immediately drive local mock provider state
+    if (this.provider && typeof this.provider.triggerScenario === 'function') {
+      this.provider.triggerScenario(scenario, targetHelmetId);
+    }
+
+    // 2. Dispatch authorized simulation scenario to backend
+    const response = await simulationService.runScenario(scenario, targetHelmetId);
+    if (response) {
+      if (response.telemetry) {
+        this.handleRealtimeTelemetry(response.telemetry);
       }
+      if (response.helmet) {
+        this.handleRealtimeHelmet(response.helmet);
+      }
+      if (response.safety) {
+        const existing = this.safetyStates.get(targetHelmetId);
+        if (existing) {
+          existing.status = response.safety.status;
+          existing.primaryTrigger = response.safety.primaryTrigger;
+          existing.triggerDetails = response.safety.triggerDetails || [];
+          existing.outputs = response.safety.outputs;
+        } else {
+          this.safetyStates.set(targetHelmetId, {
+            status: response.safety.status,
+            primaryTrigger: response.safety.primaryTrigger,
+            triggerDetails: response.safety.triggerDetails || [],
+            outputs: response.safety.outputs,
+            isPrototypeNotice: true,
+          });
+        }
+      }
+      if (response.alert) {
+        this.handleRealtimeAlert(response.alert, 'INSERT');
+      }
+      if (response.alerts && Array.isArray(response.alerts)) {
+        response.alerts.forEach((alert: any) => {
+          this.handleRealtimeAlert(alert, alert.resolved || alert.status === 'RESOLVED' ? 'UPDATE' : 'INSERT');
+        });
+      }
+      if (response.resolvedAlerts && Array.isArray(response.resolvedAlerts)) {
+        response.resolvedAlerts.forEach((alert: any) => {
+          this.handleRealtimeAlert(alert, 'UPDATE');
+        });
+      }
+      this.notifyListeners();
     }
   }
 
