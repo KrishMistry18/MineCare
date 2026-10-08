@@ -58,7 +58,7 @@ export async function verifySupabaseJwt(token: string): Promise<VerifiedTokenPay
         audience: 'authenticated',
       });
       return payload as VerifiedTokenPayload;
-    } catch (_jwksErr) {
+    } catch {
       // If remote JWKS fails, fall through to HMAC secret check
     }
   }
@@ -70,7 +70,7 @@ export async function verifySupabaseJwt(token: string): Promise<VerifiedTokenPay
       audience: 'authenticated',
     });
     return payload as VerifiedTokenPayload;
-  } catch (_hmacErr: unknown) {
+  } catch {
     // If audience check failed or signature invalid, reject
     return null;
   }

@@ -445,7 +445,6 @@ minecare/
 │   │   └── worker.ts           # Worker profile contract
 │   ├── utils/                  # Helper utilities
 │   │   └── audioAlert.ts       # Web Audio API piezo buzzer synthesizer
-│   ├── App.css
 │   ├── App.tsx                 # Root application layout & router
 │   ├── index.css               # Tailwind v4 import & control-room theme
 │   └── main.tsx                # React DOM entrypoint
