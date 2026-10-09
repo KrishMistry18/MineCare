@@ -366,8 +366,8 @@ The System Health suite (`/system`) verifies the integrity of the supervisory pi
          ▼                          ▼                          ▼
   ┌──────────────┐           ┌──────────────┐           ┌──────────────┐
   │ SOS Button   │           │ Status LEDs  │           │ Piezo Buzzer │
-  │ D1: GPIO5    │           │ D0: Green LED│           │ D3: GPIO0    │
-  │ (Push-button)│           │ D4: Red LED  │           │ (Active low) │
+  │ D1: GPIO5    │           │ D0: Green LED│           │ D5: GPIO14   │
+  │ (Push-button)│           │ D4: Red LED  │           │ (Non-strap)  │
   └──────────────┘           └──────────────┘           └──────────────┘
 ```
 
@@ -375,14 +375,14 @@ The System Health suite (`/system`) verifies the integrity of the supervisory pi
 
 | Component | Pin | GPIO | Bus / Type | Status | Specification & Role |
 | :--- | :---: | :---: | :--- | :---: | :--- |
-| **DHT22** | `D2` | `GPIO4` | Single-Bus Digital | `CONFIRMED` | Ambient temperature & relative humidity sensor |
-| **MPU6050 SDA** | `D6` | `GPIO12` | I2C Data | `CONFIRMED` | 3-axis accelerometer and 3-axis gyroscope |
-| **MPU6050 SCL** | `D7` | `GPIO13` | I2C Clock | `CONFIRMED` | Synchronous serial clock line |
-| **MQ-2 Gas Sensor** | `A0` | `ADC0` | Analog Input | `CONFIRMED` | Uncalibrated raw analog voltage (0-1023 ADC counts) |
-| **SOS Push Button** | `D1` | `GPIO5` | Digital Input | `PROPOSED` | Normally-open momentary emergency switch |
-| **Green LED (Safe)** | `D0` | `GPIO16` | Digital Output | `PROPOSED` | Visual helmet indicator for nominal status |
-| **Red LED (Hazard)** | `D4` | `GPIO2` | Digital Output | `PROPOSED` | Visual warning/danger flash indicator |
-| **Piezo Buzzer** | `D3` | `GPIO0` | Digital Output | `PROPOSED` | High-decibel local acoustic evacuation sounder |
+| **DHT22** | `D2` | `GPIO4` | Single-Bus Digital | `VERIFIED SAFE` | Ambient temperature & relative humidity sensor |
+| **MPU6050 SDA** | `D6` | `GPIO12` | I2C Data | `VERIFIED SAFE` | 3-axis accelerometer and 3-axis gyroscope |
+| **MPU6050 SCL** | `D7` | `GPIO13` | I2C Clock | `VERIFIED SAFE` | Synchronous serial clock line |
+| **MQ-2 Gas Sensor** | `A0` | `ADC0` | Analog Input | `PENDING DIVIDER` | Uncalibrated raw analog voltage (0-1023 ADC counts; requires external divider) |
+| **SOS Push Button** | `D1` | `GPIO5` | Digital Input | `VERIFIED SAFE` | Normally-open momentary emergency switch (`INPUT_PULLUP` to GND) |
+| **Green LED (Safe)** | `D0` | `GPIO16` | Digital Output | `VERIFIED SAFE` | Nominal status indicator (Active HIGH via 330Ω to GND) |
+| **Red LED (Hazard)** | `D4` | `GPIO2` | Digital Output | `VERIFIED SAFE` | Hazard indicator (Active LOW via 330Ω to 3.3V to ensure boot-strap HIGH) |
+| **Piezo Buzzer** | `D5` | `GPIO14` | Digital Output | `VERIFIED SAFE` | High-decibel sounder (Relocated from D3 to D5 to prevent flash boot lockup) |
 
 ---
 

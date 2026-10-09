@@ -25,3 +25,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Firmware secrets and build artifacts
+firmware/**/secrets.h
+!firmware/**/secrets.h.example
+firmware/**/.pio
+.pio
+.pioenvs
+.piolibdeps
