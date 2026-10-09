@@ -12,6 +12,7 @@ import type {
   DbMineZone,
   DbWorker,
   DbHelmet,
+  DbHelmetDeviceToken,
   DbZoneAssignment,
   DbTelemetry,
   DbAlert,
@@ -28,6 +29,7 @@ import type {
   IAlertRepository,
   IProfileRepository,
   IAuditRepository,
+  IDeviceTokenRepository,
   IDatabaseRepository,
   WorkerWithZoneDetails,
   HelmetWithDetails,
@@ -999,6 +1001,89 @@ export class PostgresAuditRepository implements IAuditRepository {
   }
 }
 
+export class PostgresDeviceTokenRepository implements IDeviceTokenRepository {
+  private cm: IConnectionManager;
+  constructor(cm: IConnectionManager) {
+    this.cm = cm;
+  }
+
+  public async provision(params: {
+    helmetId: string;
+    tokenHash: string;
+    tokenPrefix: string;
+    createdBy: string;
+    name?: string;
+  }): Promise<DbHelmetDeviceToken> {
+    const { helmetId, tokenHash, tokenPrefix, createdBy, name = 'ESP8266 Sensor Node' } = params;
+
+    return this.cm.withTransaction(async (client) => {
+      // 1. Atomic rotation: Revoke existing active tokens for this helmet
+      await client.query(
+        `UPDATE helmet_device_tokens
+         SET revoked_at = NOW(),
+             revoked_by = $2,
+             revocation_reason = 'ROTATED'
+         WHERE helmet_id = $1 AND revoked_at IS NULL`,
+        [helmetId, createdBy]
+      );
+
+      // 2. Insert new token record
+      const res = await client.query<DbHelmetDeviceToken>(
+        `INSERT INTO helmet_device_tokens
+           (helmet_id, token_hash, token_prefix, name, created_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         RETURNING *`,
+        [helmetId, tokenHash, tokenPrefix, name, createdBy]
+      );
+
+      return res.rows[0];
+    });
+  }
+
+  public async revoke(helmetId: string, revokedBy: string, reason: string = 'ADMIN_REVOCATION'): Promise<number> {
+    const res = await this.cm.query(
+      `UPDATE helmet_device_tokens
+       SET revoked_at = NOW(),
+           revoked_by = $2,
+           revocation_reason = $3
+       WHERE helmet_id = $1 AND revoked_at IS NULL`,
+      [helmetId, revokedBy, reason]
+    );
+    return res.rowCount || 0;
+  }
+
+  public async findByHash(tokenHash: string): Promise<DbHelmetDeviceToken | null> {
+    const res = await this.cm.query<DbHelmetDeviceToken>(
+      'SELECT * FROM helmet_device_tokens WHERE token_hash = $1 LIMIT 1',
+      [tokenHash]
+    );
+    return res.rows[0] || null;
+  }
+
+  public async findActiveByHelmetId(helmetId: string): Promise<DbHelmetDeviceToken | null> {
+    const res = await this.cm.query<DbHelmetDeviceToken>(
+      'SELECT * FROM helmet_device_tokens WHERE helmet_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1',
+      [helmetId]
+    );
+    return res.rows[0] || null;
+  }
+
+  public async findAllByHelmetId(helmetId: string): Promise<DbHelmetDeviceToken[]> {
+    const res = await this.cm.query<DbHelmetDeviceToken>(
+      'SELECT * FROM helmet_device_tokens WHERE helmet_id = $1 ORDER BY created_at DESC',
+      [helmetId]
+    );
+    return res.rows;
+  }
+
+  public async updateLastUsed(tokenId: string): Promise<void> {
+    await this.cm.query(
+      'UPDATE helmet_device_tokens SET last_used_at = NOW() WHERE id = $1',
+      [tokenId]
+    );
+  }
+}
+
 /**
  * Composite PostgreSQL Database Repository
  */
@@ -1013,6 +1098,7 @@ export class PostgresDatabaseRepository implements IDatabaseRepository {
   public alerts: IAlertRepository;
   public profiles: IProfileRepository;
   public auditLogs: IAuditRepository;
+  public deviceTokens: IDeviceTokenRepository;
 
   private startTime: number = Date.now();
   private cm: IConnectionManager;
@@ -1027,6 +1113,7 @@ export class PostgresDatabaseRepository implements IDatabaseRepository {
     this.alerts = new PostgresAlertRepository(this.cm);
     this.profiles = new PostgresProfileRepository(this.cm);
     this.auditLogs = new PostgresAuditRepository(this.cm);
+    this.deviceTokens = new PostgresDeviceTokenRepository(this.cm);
   }
 
   public static getInstance(cm?: IConnectionManager): PostgresDatabaseRepository {
@@ -1212,6 +1299,36 @@ export class PostgresDatabaseRepository implements IDatabaseRepository {
 
   public getAuditLogs(limit: number = 100): Promise<DbAuditLog[]> {
     return this.auditLogs.findAll(limit);
+  }
+
+  public provisionDeviceToken(params: {
+    helmetId: string;
+    tokenHash: string;
+    tokenPrefix: string;
+    createdBy: string;
+    name?: string;
+  }): Promise<DbHelmetDeviceToken> {
+    return this.deviceTokens.provision(params);
+  }
+
+  public revokeDeviceToken(helmetId: string, revokedBy: string, reason?: string): Promise<number> {
+    return this.deviceTokens.revoke(helmetId, revokedBy, reason);
+  }
+
+  public findDeviceTokenByHash(tokenHash: string): Promise<DbHelmetDeviceToken | null> {
+    return this.deviceTokens.findByHash(tokenHash);
+  }
+
+  public getActiveDeviceToken(helmetId: string): Promise<DbHelmetDeviceToken | null> {
+    return this.deviceTokens.findActiveByHelmetId(helmetId);
+  }
+
+  public getDeviceTokens(helmetId: string): Promise<DbHelmetDeviceToken[]> {
+    return this.deviceTokens.findAllByHelmetId(helmetId);
+  }
+
+  public updateDeviceTokenLastUsed(tokenId: string): Promise<void> {
+    return this.deviceTokens.updateLastUsed(tokenId);
   }
 
   public async getSystemHealth(): Promise<SystemHealthStatus> {

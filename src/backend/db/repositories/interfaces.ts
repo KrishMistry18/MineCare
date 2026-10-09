@@ -16,6 +16,7 @@ import type {
   DbMineZone,
   DbWorker,
   DbHelmet,
+  DbHelmetDeviceToken,
   DbZoneAssignment,
   DbTelemetry,
   DbAlert,
@@ -23,6 +24,21 @@ import type {
   DbAuditLog,
   SystemHealthStatus,
 } from '../../types';
+
+export interface IDeviceTokenRepository {
+  provision(params: {
+    helmetId: string;
+    tokenHash: string;
+    tokenPrefix: string;
+    createdBy: string;
+    name?: string;
+  }): Promise<DbHelmetDeviceToken>;
+  revoke(helmetId: string, revokedBy: string, reason?: string): Promise<number>;
+  findByHash(tokenHash: string): Promise<DbHelmetDeviceToken | null>;
+  findActiveByHelmetId(helmetId: string): Promise<DbHelmetDeviceToken | null>;
+  findAllByHelmetId(helmetId: string): Promise<DbHelmetDeviceToken[]>;
+  updateLastUsed(tokenId: string): Promise<void>;
+}
 
 export interface IZoneRepository {
   findAll(): Promise<DbMineZone[]>;
@@ -186,6 +202,20 @@ export interface IDatabaseRepository {
 
   logAuditAction(entry: Omit<DbAuditLog, 'id' | 'created_at'>): Promise<DbAuditLog>;
   getAuditLogs(limit?: number): Promise<DbAuditLog[]>;
+
+  // Device Token Management
+  provisionDeviceToken(params: {
+    helmetId: string;
+    tokenHash: string;
+    tokenPrefix: string;
+    createdBy: string;
+    name?: string;
+  }): Promise<DbHelmetDeviceToken>;
+  revokeDeviceToken(helmetId: string, revokedBy: string, reason?: string): Promise<number>;
+  findDeviceTokenByHash(tokenHash: string): Promise<DbHelmetDeviceToken | null>;
+  getActiveDeviceToken(helmetId: string): Promise<DbHelmetDeviceToken | null>;
+  getDeviceTokens(helmetId: string): Promise<DbHelmetDeviceToken[]>;
+  updateDeviceTokenLastUsed(tokenId: string): Promise<void>;
 
   getSystemHealth(): Promise<SystemHealthStatus>;
   ping?(): Promise<boolean>;

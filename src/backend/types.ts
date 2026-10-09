@@ -77,6 +77,43 @@ export interface DbHelmet {
   updated_at: string;
 }
 
+export interface DbHelmetDeviceToken {
+  id: string;
+  helmet_id: string;
+  token_hash: string;
+  token_prefix: string;
+  name: string;
+  created_by: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  revocation_reason: string | null;
+}
+
+export interface ProvisionedDeviceTokenResult {
+  helmetId: string;
+  token: string;
+  tokenPrefix: string;
+  createdAt: string;
+  createdBy: string;
+  name: string;
+}
+
+export interface DeviceTokenMetadata {
+  id: string;
+  helmetId: string;
+  tokenPrefix: string;
+  name: string;
+  createdAt: string;
+  createdBy: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  revocationReason: string | null;
+  isActive: boolean;
+}
+
 export interface DbZoneAssignment {
   id: string;
   worker_id: string;

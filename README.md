@@ -616,7 +616,35 @@ MineCare is configured for cloud prototype and demo deployment across a modern d
 
 ---
 
-## 22. Author & Credits
+## 22. Production-Grade ESP8266 Device Provisioning & Credential Lifecycle
+
+MineCare implements a cryptographically secure, persistent device authentication boundary separating human operator sessions from physical ESP8266 microcontroller sensor nodes.
+
+### Architecture Highlights
+- **Cryptographic High-Entropy Credentials**: Generated via CSPRNG `crypto.randomBytes(32)` providing 256 bits of entropy per device (`mc_live_<helmetId>_<hex>`).
+- **Zero Plaintext Secrets at Rest**: Only the SHA-256 digest (`token_hash`) and a safe 16-character identifier (`token_prefix`) are persisted in PostgreSQL (`helmet_device_tokens`).
+- **One-Time Issuance Guarantee**: The raw token is returned exactly once in the HTTP 201 provisioning response body. It is never logged or exposed in subsequent queries.
+- **Strict Helmet Binding**: Hardware tokens are strictly coupled to their provisioned helmet record. Attempting to ingest telemetry for a mismatched helmet returns `403 Forbidden`.
+- **Atomic Rotation Without Data Loss**: Provisioning a new token revokes the previous active credential inside a database transaction while leaving all historical telemetry packets intact.
+- **Immediate Revocation**: Administrative endpoint `POST /api/v1/admin/helmets/:id/device-token/revoke` invalidates compromised credentials in real time.
+
+```bash
+# Provision a device token (Admin access required)
+curl -X POST https://api.minecare.local/api/v1/admin/helmets/MC-001/device-token \
+  -H "Authorization: Bearer <ADMIN_JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "ESP8266 Sensor Node"}'
+
+# Revoke a device token
+curl -X POST https://api.minecare.local/api/v1/admin/helmets/MC-001/device-token/revoke \
+  -H "Authorization: Bearer <ADMIN_JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Hardware node decommissioned"}'
+```
+
+---
+
+## 23. Author & Credits
 
 **MineCare — Smart Mine Safety Helmet Platform**
 
@@ -626,7 +654,7 @@ MineCare is configured for cloud prototype and demo deployment across a modern d
 
 ---
 
-## 23. License
+## 24. License
 
 This project is developed for academic, experimental, and safety engineering research. All software and hardware designs are provided for evaluation purposes.
 

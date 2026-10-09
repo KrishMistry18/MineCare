@@ -37,7 +37,7 @@ import { RequestLimiter } from './security/RequestLimiter';
 import { ApiError } from './security/ApiError';
 import { InputValidator } from './security/InputValidator';
 import { RateLimiter } from './security/RateLimiter';
-import { DeviceAuthManager } from './security/DeviceAuth';
+import { DeviceAuthManager, DeviceTokenGenerator } from './security/DeviceAuth';
 import { MetricsCollector } from './observability/MetricsCollector';
 
 export class BackendApp {
@@ -474,11 +474,12 @@ export class BackendApp {
         const currentUser = authHeader ? await this.authManager.authenticateRequest(req) : null;
         const isProduction = getBackendConfig().isProduction;
 
-        const deviceAuth = DeviceAuthManager.authenticateTelemetryRequest(
+        const deviceAuth = await DeviceAuthManager.authenticateTelemetryRequest(
           req,
           currentUser,
           isProduction,
-          packet.helmetId
+          packet.helmetId,
+          this.db
         );
         if (!deviceAuth.isAuthenticated) {
           const status = deviceAuth.statusCode || 401;
@@ -489,27 +490,31 @@ export class BackendApp {
 
           const rawToken = req.headers['x-device-token'];
           const devToken = typeof rawToken === 'string' ? rawToken : '';
-          const isRevoked = devToken && DeviceAuthManager.isTokenRevoked(devToken);
-          const isMismatch = deviceAuth.error?.includes('bound to helmet');
+          const tokenPrefix = devToken ? DeviceTokenGenerator.getPrefix(devToken) : '';
+          const isRevoked = devToken && (
+            DeviceAuthManager.isTokenRevoked(devToken) ||
+            Boolean(deviceAuth.error?.toLowerCase().includes('revoked'))
+          );
+          const isMismatch = Boolean(deviceAuth.error?.includes('bound to helmet'));
 
           if (isRevoked) {
             MetricsCollector.getInstance().recordDeviceSecurityEvent(
               'REVOKED_DEVICE_TOKEN',
-              { token: devToken, targetHelmetId: packet.helmetId },
+              { token: devToken, tokenPrefix, targetHelmetId: packet.helmetId },
               requestId,
               clientIp
             );
           } else if (isMismatch) {
             MetricsCollector.getInstance().recordDeviceSecurityEvent(
               'DEVICE_HELMET_MISMATCH',
-              { token: devToken, targetHelmetId: packet.helmetId },
+              { token: devToken, tokenPrefix, targetHelmetId: packet.helmetId },
               requestId,
               clientIp
             );
           } else {
             MetricsCollector.getInstance().recordDeviceSecurityEvent(
               'INVALID_DEVICE_TOKEN',
-              { token: devToken, targetHelmetId: packet.helmetId, authType: deviceAuth.authType },
+              { token: devToken, tokenPrefix, targetHelmetId: packet.helmetId, authType: deviceAuth.authType },
               requestId,
               clientIp
             );
@@ -1053,6 +1058,212 @@ export class BackendApp {
         if (pathname === '/api/v1/admin/metrics' && method === 'GET') {
           const snapshot = await MetricsCollector.getInstance().getSnapshot(this.db);
           this.sendJson(res, 200, snapshot);
+          return true;
+        }
+
+        // POST /api/v1/admin/helmets/:id/device-token (Provision or Rotate Hardware Token)
+        const helmetTokenMatch = pathname.match(/^\/api\/v1\/admin\/helmets\/([^/]+)\/device-token$/);
+        if (helmetTokenMatch && method === 'POST') {
+          const helmetId = helmetTokenMatch[1];
+          const helmetVal = InputValidator.validateEntityId(helmetId, 'helmetId');
+          if (!helmetVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+            return true;
+          }
+          const cleanHelmetId = helmetVal.sanitized!;
+
+          const helmet = await this.db.getHelmet(cleanHelmetId);
+          if (!helmet) {
+            this.sendJson(res, 404, ApiError.notFound(requestId, `Helmet ${cleanHelmetId} not found`));
+            return true;
+          }
+
+          const body = await this.readJsonBody(req, pathname);
+          if (body._tooLarge) {
+            this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+            return true;
+          }
+          if (body._malformed) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+            return true;
+          }
+
+          const deviceName =
+            typeof body.name === 'string' && body.name.trim()
+              ? body.name.trim().slice(0, 100)
+              : 'ESP8266 Sensor Node';
+
+          // Generate 256-bit CSPRNG raw token and SHA-256 hash
+          const { rawToken, tokenHash, tokenPrefix } = DeviceTokenGenerator.generate(cleanHelmetId);
+
+          try {
+            // Atomic transaction in repository: revokes previous active token, inserts new hashed token
+            const record = await this.db.provisionDeviceToken({
+              helmetId: cleanHelmetId,
+              tokenHash,
+              tokenPrefix,
+              createdBy: currentUser.email || currentUser.id,
+              name: deviceName,
+            });
+
+            // Audit log without raw credentials
+            await this.db.logAuditAction({
+              user_id: currentUser.id,
+              user_email: currentUser.email,
+              role: currentUser.role,
+              action: 'DEVICE_TOKEN_PROVISIONED',
+              target_type: 'HELMET',
+              target_id: cleanHelmetId,
+              details: {
+                token_prefix: tokenPrefix,
+                helmet_id: cleanHelmetId,
+                name: record.name,
+                action_type: 'PROVISION_AND_ROTATE',
+              },
+            });
+
+            MetricsCollector.getInstance().recordDeviceSecurityEvent(
+              'ADMIN_SECURITY_ACTION',
+              { action: 'DEVICE_TOKEN_PROVISIONED', helmetId: cleanHelmetId, tokenPrefix },
+              requestId,
+              clientIp
+            );
+
+            // Raw token is returned EXACTLY ONCE upon successful creation
+            this.sendJson(res, 201, {
+              success: true,
+              message: 'Device token provisioned successfully. Record this token immediately; it cannot be retrieved again.',
+              token: rawToken,
+              helmetId: cleanHelmetId,
+              tokenPrefix,
+              createdAt: record.created_at,
+              name: record.name,
+            });
+            return true;
+          } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            StructuredLogger.error({
+              message: 'Failed to provision device token',
+              meta: { helmetId: cleanHelmetId, error: errMsg },
+              requestId,
+            });
+            this.sendJson(res, 500, ApiError.internal(requestId, 'Database failure while provisioning device token'));
+            return true;
+          }
+        }
+
+        // POST /api/v1/admin/helmets/:id/device-token/revoke (Revoke Active Hardware Token)
+        const revokeTokenMatch = pathname.match(/^\/api\/v1\/admin\/helmets\/([^/]+)\/device-token\/revoke$/);
+        if (revokeTokenMatch && method === 'POST') {
+          const helmetId = revokeTokenMatch[1];
+          const helmetVal = InputValidator.validateEntityId(helmetId, 'helmetId');
+          if (!helmetVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+            return true;
+          }
+          const cleanHelmetId = helmetVal.sanitized!;
+
+          const helmet = await this.db.getHelmet(cleanHelmetId);
+          if (!helmet) {
+            this.sendJson(res, 404, ApiError.notFound(requestId, `Helmet ${cleanHelmetId} not found`));
+            return true;
+          }
+
+          const body = await this.readJsonBody(req, pathname);
+          if (body._tooLarge) {
+            this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+            return true;
+          }
+          if (body._malformed) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, 'Invalid or malformed request payload'));
+            return true;
+          }
+
+          const reason =
+            typeof body.reason === 'string' && body.reason.trim()
+              ? body.reason.trim().slice(0, 200)
+              : 'ADMIN_MANUAL_REVOCATION';
+
+          try {
+            const revokedCount = await this.db.revokeDeviceToken(
+              cleanHelmetId,
+              currentUser.email || currentUser.id,
+              reason
+            );
+
+            await this.db.logAuditAction({
+              user_id: currentUser.id,
+              user_email: currentUser.email,
+              role: currentUser.role,
+              action: 'DEVICE_TOKEN_REVOKED',
+              target_type: 'HELMET',
+              target_id: cleanHelmetId,
+              details: {
+                helmet_id: cleanHelmetId,
+                revoked_count: revokedCount,
+                reason,
+              },
+            });
+
+            MetricsCollector.getInstance().recordDeviceSecurityEvent(
+              'ADMIN_SECURITY_ACTION',
+              { action: 'DEVICE_TOKEN_REVOKED', helmetId: cleanHelmetId, revokedCount },
+              requestId,
+              clientIp
+            );
+
+            this.sendJson(res, 200, {
+              success: true,
+              message: `Revoked ${revokedCount} active device token(s) for helmet ${cleanHelmetId}`,
+              helmetId: cleanHelmetId,
+              revokedCount,
+            });
+            return true;
+          } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            StructuredLogger.error({
+              message: 'Failed to revoke device token',
+              meta: { helmetId: cleanHelmetId, error: errMsg },
+              requestId,
+            });
+            this.sendJson(res, 500, ApiError.internal(requestId, 'Database failure while revoking device token'));
+            return true;
+          }
+        }
+
+        // GET /api/v1/admin/helmets/:id/device-token (Inspect Active Device Token Metadata)
+        if (helmetTokenMatch && method === 'GET') {
+          const helmetId = helmetTokenMatch[1];
+          const helmetVal = InputValidator.validateEntityId(helmetId, 'helmetId');
+          if (!helmetVal.isValid) {
+            this.sendJson(res, 400, ApiError.badRequest(requestId, helmetVal.errors.join('; ')));
+            return true;
+          }
+          const cleanHelmetId = helmetVal.sanitized!;
+
+          const helmet = await this.db.getHelmet(cleanHelmetId);
+          if (!helmet) {
+            this.sendJson(res, 404, ApiError.notFound(requestId, `Helmet ${cleanHelmetId} not found`));
+            return true;
+          }
+
+          const activeToken = await this.db.getActiveDeviceToken(cleanHelmetId);
+
+          this.sendJson(res, 200, {
+            success: true,
+            helmetId: cleanHelmetId,
+            hasActiveToken: Boolean(activeToken),
+            token: activeToken
+              ? {
+                  id: activeToken.id,
+                  tokenPrefix: activeToken.token_prefix,
+                  name: activeToken.name,
+                  createdAt: activeToken.created_at,
+                  createdBy: activeToken.created_by,
+                  lastUsedAt: activeToken.last_used_at,
+                }
+              : null,
+          });
           return true;
         }
 

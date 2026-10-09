@@ -163,3 +163,102 @@ MineCare exposes three health endpoints designed for cloud load balancers and or
    - `TELEMETRY`: 120 packets per minute per device/IP.
    - `ADMIN`: 60 requests per minute per admin account.
    - `GENERAL`: 300 requests per minute per IP.
+
+---
+
+## 6. ESP8266 Device Provisioning, Revocation & Rotation Procedures
+
+### A. Device Credential Architecture
+
+Each physical MineCare helmet node (ESP8266) is provisioned with a dedicated, high-entropy cryptographic hardware credential:
+- **Format**: `mc_live_<helmetId>_<64-character-hex-entropy>` (e.g. `mc_live_MC-001_...`).
+- **Entropy**: 256 bits of cryptographically secure pseudo-random entropy generated via Node.js `crypto.randomBytes(32)`.
+- **Storage Policy (Zero Plaintext Secrets)**:
+  - The raw token is returned **EXACTLY ONCE** in the HTTP 201 response body upon provisioning.
+  - The database persistently stores only the cryptographic **SHA-256 digest** (`token_hash`), a safe 16-character prefix (`token_prefix`), helmet binding (`helmet_id`), creation metadata, and revocation state.
+  - Raw tokens are **NEVER** stored in any database table, configuration file, browser response (other than the initial 201 response), or server log.
+- **Telemetry Boundary Enforcement**:
+  - Microcontrollers provide credentials via HTTP header: `X-Device-Token: <raw-device-token>`.
+  - In production mode (`NODE_ENV=production`), incoming telemetry packets are strictly validated against persistent hashed credentials in PostgreSQL.
+  - Strict helmet binding is enforced: using Helmet A's token to send telemetry for Helmet B results in `403 Forbidden`.
+  - Human user JWTs (`Bearer ...` or `eyJ...`) are rejected with `401 Unauthorized`.
+  - Prototype dev fallback tokens (`mc_dev_*`) are blocked in production.
+
+### B. Device Provisioning Procedure
+
+To commission a physical ESP8266 helmet node:
+
+1. Authenticate as a user with the `ADMIN` role and obtain a valid session access token.
+2. Send an administrative provisioning request:
+   ```http
+   POST /api/v1/admin/helmets/MC-001/device-token
+   Host: api.minecare.local
+   Authorization: Bearer <ADMIN_SESSION_TOKEN>
+   Content-Type: application/json
+
+   {
+     "name": "MineCare Helmet MC-001 ESP8266 Node"
+   }
+   ```
+3. Receive the one-time provisioning response:
+   ```http
+   HTTP/1.1 201 Created
+   Content-Type: application/json
+
+   {
+     "success": true,
+     "message": "Device token provisioned successfully. Record this token immediately; it cannot be retrieved again.",
+     "token": "mc_live_MC-001_a9f3b8c2d1e0f4...",
+     "helmetId": "MC-001",
+     "tokenPrefix": "mc_live_MC-001_a",
+     "createdAt": "2026-10-09T11:00:00.000Z",
+     "name": "MineCare Helmet MC-001 ESP8266 Node"
+   }
+   ```
+4. Securely flash or write the raw token into the ESP8266 non-volatile EEPROM/SPIFFS storage during hardware commissioning.
+5. Inspect device token metadata (safe public verification):
+   ```http
+   GET /api/v1/admin/helmets/MC-001/device-token
+   Authorization: Bearer <ADMIN_SESSION_TOKEN>
+   ```
+
+### C. Safe Atomic Rotation Procedure
+
+When rotating credentials (scheduled maintenance or firmware re-flashing):
+
+1. Submit a new provisioning request for the target helmet:
+   ```http
+   POST /api/v1/admin/helmets/MC-001/device-token
+   Authorization: Bearer <ADMIN_SESSION_TOKEN>
+   ```
+2. The backend executes an atomic database transaction:
+   - Any currently active token for `MC-001` is marked with `revoked_at = NOW()` and `revocation_reason = 'ROTATED'`.
+   - The newly generated token hash is inserted and activated.
+   - Historical telemetry packets and helmet database records are **never deleted or altered**.
+3. Flash the new token to the physical ESP8266 helmet.
+4. Old credentials are now rejected with `401 Unauthorized` while telemetry resumes with the new credential.
+
+### D. Emergency Revocation Procedure
+
+If a helmet is reported lost, stolen, or compromised:
+
+1. Issue an immediate administrative revocation:
+   ```http
+   POST /api/v1/admin/helmets/MC-001/device-token/revoke
+   Authorization: Bearer <ADMIN_SESSION_TOKEN>
+   Content-Type: application/json
+
+   {
+     "reason": "Hardware node reported lost in Sector 4"
+   }
+   ```
+2. The backend immediately revokes the active token in PostgreSQL.
+3. Subsequent telemetry submissions using the revoked credential are automatically rejected (`401 Unauthorized`).
+4. An audit log entry (`DEVICE_TOKEN_REVOKED`) is permanently written with timestamp and admin identity.
+
+### E. Recovery & Re-Commissioning Procedure
+
+1. Inspect the physical unit or verify hardware integrity.
+2. Perform standard device provisioning as described in Section 6.B to issue a fresh credential.
+3. Flash the new credential to the helmet microcontroller.
+4. Verify telemetry reception and helmet transition to `ONLINE`.

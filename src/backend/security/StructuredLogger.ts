@@ -48,7 +48,7 @@ const SENSITIVE_KEY_PATTERNS = [
 const POSTGRES_URL_REGEX = /(postgres(?:ql)?:\/\/[^:]+:)[^@]+(@)/gi;
 const BEARER_TOKEN_REGEX = /Bearer\s+[a-zA-Z0-9._~+/-]+=*/gi;
 const JWT_PATTERN_REGEX = /eyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]*/g;
-const DEVICE_TOKEN_REGEX = /mc_dev_[a-zA-Z0-9_-]+/g;
+const DEVICE_TOKEN_REGEX = /mc_(?:dev|live)_[a-zA-Z0-9_-]+/g;
 
 export class StructuredLogger {
   private static recentLogs: LogEntry[] = [];

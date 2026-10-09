@@ -16,6 +16,7 @@ import type {
   DbAlert,
   DbUserProfile,
   DbAuditLog,
+  DbHelmetDeviceToken,
   AuthSession,
   SystemHealthStatus,
 } from '../types';
@@ -37,6 +38,7 @@ export class DatabaseRepository {
   private profiles: Map<string, DbUserProfile> = new Map();
   private auditLogs: DbAuditLog[] = [];
   private activeSessions: Map<string, AuthSession> = new Map();
+  private deviceTokens: Map<string, DbHelmetDeviceToken> = new Map();
 
   private startTime: number = Date.now();
   private supabaseConfigured: boolean = false;
@@ -651,6 +653,94 @@ export class DatabaseRepository {
 
   public getAuditLogs(limit: number = 100): DbAuditLog[] {
     return this.auditLogs.slice(0, limit);
+  }
+
+  // ==================== DEVICE TOKENS ====================
+
+  public async provisionDeviceToken(params: {
+    helmetId: string;
+    tokenHash: string;
+    tokenPrefix: string;
+    createdBy: string;
+    name?: string;
+  }): Promise<DbHelmetDeviceToken> {
+    const now = new Date().toISOString();
+    // Rotate existing active tokens for this helmet
+    for (const [id, token] of this.deviceTokens.entries()) {
+      if (token.helmet_id === params.helmetId && !token.revoked_at) {
+        this.deviceTokens.set(id, {
+          ...token,
+          revoked_at: now,
+          revoked_by: params.createdBy,
+          revocation_reason: 'ROTATED',
+        });
+      }
+    }
+
+    const id = `dt-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const newToken: DbHelmetDeviceToken = {
+      id,
+      helmet_id: params.helmetId,
+      token_hash: params.tokenHash,
+      token_prefix: params.tokenPrefix,
+      name: params.name || 'ESP8266 Sensor Node',
+      created_by: params.createdBy,
+      created_at: now,
+      last_used_at: null,
+      revoked_at: null,
+      revoked_by: null,
+      revocation_reason: null,
+    };
+    this.deviceTokens.set(id, newToken);
+    return newToken;
+  }
+
+  public async revokeDeviceToken(helmetId: string, revokedBy: string, reason: string = 'ADMIN_REVOCATION'): Promise<number> {
+    const now = new Date().toISOString();
+    let count = 0;
+    for (const [id, token] of this.deviceTokens.entries()) {
+      if (token.helmet_id === helmetId && !token.revoked_at) {
+        this.deviceTokens.set(id, {
+          ...token,
+          revoked_at: now,
+          revoked_by: revokedBy,
+          revocation_reason: reason,
+        });
+        count++;
+      }
+    }
+    return count;
+  }
+
+  public async findDeviceTokenByHash(tokenHash: string): Promise<DbHelmetDeviceToken | null> {
+    for (const token of this.deviceTokens.values()) {
+      if (token.token_hash === tokenHash) {
+        return token;
+      }
+    }
+    return null;
+  }
+
+  public async getActiveDeviceToken(helmetId: string): Promise<DbHelmetDeviceToken | null> {
+    for (const token of this.deviceTokens.values()) {
+      if (token.helmet_id === helmetId && !token.revoked_at) {
+        return token;
+      }
+    }
+    return null;
+  }
+
+  public async getDeviceTokens(helmetId: string): Promise<DbHelmetDeviceToken[]> {
+    return Array.from(this.deviceTokens.values())
+      .filter((t) => t.helmet_id === helmetId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  public async updateDeviceTokenLastUsed(tokenId: string): Promise<void> {
+    const token = this.deviceTokens.get(tokenId);
+    if (token) {
+      token.last_used_at = new Date().toISOString();
+    }
   }
 
   // ==================== SYSTEM HEALTH ====================

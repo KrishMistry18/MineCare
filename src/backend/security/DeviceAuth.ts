@@ -7,14 +7,20 @@
  * Provides a dedicated authentication boundary for high-frequency telemetry ingestion:
  * - Supports `X-Device-Token` header for sensor nodes / microcontrollers.
  * - Hardware tokens are strictly bound to specific helmet IDs.
+ * - Authenticates against persistent hashed credentials (SHA-256) in PostgreSQL.
  * - Rejects invalid, revoked, or mismatched hardware tokens.
- * - Supports operator/supervisor user sessions for simulation and manual override.
+ * - Rejects human JWTs passed as device credentials.
+ * - Supports operator/supervisor user sessions for simulation and manual override in dev.
  * - Preserves mock telemetry in development / test mode.
- * - Rejects unauthenticated telemetry packets in production.
+ * - Strictly rejects unauthenticated telemetry packets in production without fallback.
  */
 
 import type { IncomingMessage } from 'http';
 import type { DbUserProfile } from '../types';
+import type { IDatabaseRepository } from '../db/repositories/interfaces';
+import { DeviceTokenGenerator } from './DeviceTokenGenerator';
+
+export { DeviceTokenGenerator };
 
 export interface DeviceAuthResult {
   isAuthenticated: boolean;
@@ -32,21 +38,21 @@ export class DeviceAuthManager {
   private static registeredTokens: Map<string, string> = new Map(); // token -> helmetId
 
   /**
-   * Registers a hardware device token bound to a specific helmet ID.
+   * Registers a hardware device token bound to a specific helmet ID (in-memory test registry).
    */
   public static registerDeviceToken(token: string, helmetId: string): void {
     this.registeredTokens.set(token.trim(), helmetId.trim());
   }
 
   /**
-   * Explicitly marks a device token as revoked.
+   * Explicitly marks a device token as revoked in-memory.
    */
   public static revokeToken(token: string): void {
     this.revokedTokens.add(token.trim());
   }
 
   /**
-   * Checks whether a device token is revoked.
+   * Checks whether a device token is revoked in in-memory or environment lists.
    */
   public static isTokenRevoked(token: string): boolean {
     const clean = token.trim();
@@ -73,13 +79,15 @@ export class DeviceAuthManager {
 
   /**
    * Evaluates authentication boundary for telemetry ingestion with helmet binding.
+   * Supports persistent hashed credential verification when IDatabaseRepository is provided.
    */
   public static authenticateTelemetryRequest(
     req: IncomingMessage,
     currentUser: DbUserProfile | null,
     isProduction: boolean,
-    targetHelmetId?: string
-  ): DeviceAuthResult {
+    targetHelmetId?: string,
+    db?: IDatabaseRepository
+  ): DeviceAuthResult | Promise<DeviceAuthResult> {
     const rawDeviceToken = req.headers['x-device-token'];
     const deviceToken = typeof rawDeviceToken === 'string' ? rawDeviceToken.trim() : undefined;
     const configuredSecret = process.env.MINECARE_DEVICE_SECRET || DEFAULT_DEV_DEVICE_TOKEN;
@@ -96,7 +104,7 @@ export class DeviceAuthManager {
         };
       }
 
-      // 1.1 Revocation Check
+      // 1.1 Revocation Check (in-memory / env list)
       if (this.isTokenRevoked(deviceToken)) {
         return {
           isAuthenticated: false,
@@ -124,8 +132,93 @@ export class DeviceAuthManager {
         };
       }
 
-      // 1.3 Format: mc_dev_${helmetId} (e.g. mc_dev_MC-001)
-      if (deviceToken.startsWith('mc_dev_')) {
+      // 1.3 Master Hardware Gateway Secret
+      if (deviceToken === configuredSecret) {
+        return {
+          isAuthenticated: true,
+          authType: 'DEVICE_TOKEN',
+          deviceId: 'gateway-master',
+        };
+      }
+
+      // 1.4 Persistent Hashed Database Authentication (Authoritative Production Storage)
+      if (db && typeof db.findDeviceTokenByHash === 'function') {
+        const tokenHash = DeviceTokenGenerator.hash(deviceToken);
+        return (async () => {
+          const record = await db.findDeviceTokenByHash(tokenHash);
+          if (record) {
+            // Check if token has been revoked in database
+            if (record.revoked_at) {
+              return {
+                isAuthenticated: false,
+                statusCode: 401,
+                authType: 'DEVICE_TOKEN',
+                error: 'Unauthorized: Device token has been revoked',
+              };
+            }
+
+            // Check helmet binding: token cannot be used for any other helmet
+            if (targetHelmetId && record.helmet_id && record.helmet_id !== targetHelmetId) {
+              return {
+                isAuthenticated: false,
+                statusCode: 403,
+                authType: 'DEVICE_TOKEN',
+                error: `Forbidden: Device token is bound to helmet ${record.helmet_id}, not ${targetHelmetId}`,
+              };
+            }
+
+            // Update last used timestamp
+            if (typeof db.updateDeviceTokenLastUsed === 'function') {
+              void db.updateDeviceTokenLastUsed(record.id).catch(() => {});
+            }
+
+            return {
+              isAuthenticated: true,
+              authType: 'DEVICE_TOKEN',
+              deviceId: `helmet-device-${record.helmet_id}`,
+            };
+          }
+
+          // Token hash not found in database:
+          // In production, strictly reject without fallback bypass
+          if (isProduction) {
+            return {
+              isAuthenticated: false,
+              statusCode: 401,
+              authType: 'DEVICE_TOKEN',
+              error: 'Unauthorized: Invalid X-Device-Token for telemetry node',
+            };
+          }
+
+          // In dev/test mode only: support mc_dev_${helmetId} prototype tokens
+          if (deviceToken.startsWith('mc_dev_')) {
+            const boundHelmetId = deviceToken.slice(7);
+            if (targetHelmetId && boundHelmetId && boundHelmetId !== targetHelmetId) {
+              return {
+                isAuthenticated: false,
+                statusCode: 403,
+                authType: 'DEVICE_TOKEN',
+                error: `Forbidden: Device token is bound to helmet ${boundHelmetId}, not ${targetHelmetId}`,
+              };
+            }
+            return {
+              isAuthenticated: true,
+              authType: 'DEVICE_TOKEN',
+              deviceId: deviceToken,
+            };
+          }
+
+          return {
+            isAuthenticated: false,
+            statusCode: 401,
+            authType: 'DEVICE_TOKEN',
+            error: 'Unauthorized: Invalid X-Device-Token for telemetry node',
+          };
+        })();
+      }
+
+      // 1.5 Non-DB fallback (Unit tests without db instance)
+      if (!isProduction && deviceToken.startsWith('mc_dev_')) {
         const boundHelmetId = deviceToken.slice(7);
         if (targetHelmetId && boundHelmetId && boundHelmetId !== targetHelmetId) {
           return {
@@ -142,16 +235,7 @@ export class DeviceAuthManager {
         };
       }
 
-      // 1.4 Master Hardware Gateway Secret
-      if (deviceToken === configuredSecret) {
-        return {
-          isAuthenticated: true,
-          authType: 'DEVICE_TOKEN',
-          deviceId: 'gateway-master',
-        };
-      }
-
-      // 1.5 Unrecognized Token
+      // 1.6 Unrecognized Token
       return {
         isAuthenticated: false,
         statusCode: 401,
