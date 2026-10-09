@@ -61,10 +61,15 @@ export interface RateLimitResult {
 
 export interface IRateLimitStore {
   get(key: string): Promise<RateLimitEntry | null>;
-  set(key: string, entry: RateLimitEntry, ttlMs: number): Promise<void>;
+  set(key: string, entry: RateLimitEntry, ttlMs?: number): Promise<void>;
   delete(key: string): Promise<void>;
   prune?(): Promise<void>;
   isPersistent(): boolean;
+  checkAndRecord?(
+    category: 'AUTH' | 'TELEMETRY' | 'GENERAL' | 'ADMIN',
+    identifier: string,
+    policy: RateLimitPolicy
+  ): Promise<RateLimitResult>;
 }
 
 /**
@@ -93,6 +98,65 @@ export class MemoryRateLimitStore implements IRateLimitStore {
     this.buckets.delete(key);
   }
 
+  public async checkAndRecord(
+    category: 'AUTH' | 'TELEMETRY' | 'GENERAL' | 'ADMIN',
+    identifier: string,
+    policy: RateLimitPolicy
+  ): Promise<RateLimitResult> {
+    const key = `${category}:${identifier}`;
+    let entry = this.buckets.get(key);
+    if (!entry) {
+      entry = { timestamps: [] };
+      this.buckets.set(key, entry);
+    }
+    const now = Date.now();
+
+    // 1. Check if actively blocked
+    if (entry.blockedUntil && entry.blockedUntil > now) {
+      const retryAfter = Math.max(1, Math.ceil((entry.blockedUntil - now) / 1000));
+      return {
+        allowed: false,
+        limit: policy.maxRequests,
+        remaining: 0,
+        resetSeconds: retryAfter,
+        retryAfterSeconds: retryAfter,
+      };
+    }
+
+    // 2. Prune timestamps outside current window
+    const windowStart = now - policy.windowMs;
+    entry.timestamps = entry.timestamps.filter((ts) => ts > windowStart);
+
+    // 3. Check if limit exceeded
+    if (entry.timestamps.length >= policy.maxRequests) {
+      const oldest = entry.timestamps[0];
+      const resetTime = oldest + policy.windowMs;
+      const retryAfter = Math.max(1, Math.ceil((resetTime - now) / 1000));
+      entry.blockedUntil = now + retryAfter * 1000;
+      return {
+        allowed: false,
+        limit: policy.maxRequests,
+        remaining: 0,
+        resetSeconds: retryAfter,
+        retryAfterSeconds: retryAfter,
+      };
+    }
+
+    // 4. Record allowed request
+    entry.timestamps.push(now);
+    entry.blockedUntil = undefined;
+    const remaining = policy.maxRequests - entry.timestamps.length;
+    const oldest = entry.timestamps[0];
+    const resetSeconds = Math.max(1, Math.ceil((oldest + policy.windowMs - now) / 1000));
+
+    return {
+      allowed: true,
+      limit: policy.maxRequests,
+      remaining,
+      resetSeconds,
+    };
+  }
+
   public async prune(): Promise<void> {
     const now = Date.now();
     for (const [key, entry] of this.buckets.entries()) {
@@ -115,24 +179,35 @@ export class MemoryRateLimitStore implements IRateLimitStore {
   }
 }
 
+
 /**
  * Authoritative PostgreSQL-backed Rate Limit Store
  */
 export class PostgresRateLimitStore implements IRateLimitStore {
-  private tableEnsured = false;
+  private static tableEnsured = false;
 
   private async ensureTable(): Promise<void> {
-    if (this.tableEnsured) return;
+    if (PostgresRateLimitStore.tableEnsured) return;
     try {
       await connectionManager.query(`
         CREATE TABLE IF NOT EXISTS rate_limits (
           key TEXT PRIMARY KEY,
+          tier TEXT,
+          identifier TEXT,
+          window_start BIGINT,
+          request_count INTEGER DEFAULT 0,
           timestamps JSONB NOT NULL DEFAULT '[]'::jsonb,
           blocked_until BIGINT,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        ALTER TABLE rate_limits ADD COLUMN IF NOT EXISTS tier TEXT;
+        ALTER TABLE rate_limits ADD COLUMN IF NOT EXISTS identifier TEXT;
+        ALTER TABLE rate_limits ADD COLUMN IF NOT EXISTS window_start BIGINT;
+        ALTER TABLE rate_limits ADD COLUMN IF NOT EXISTS request_count INTEGER DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_rate_limits_tier_id ON rate_limits (tier, identifier);
+        CREATE INDEX IF NOT EXISTS idx_rate_limits_updated ON rate_limits (updated_at);
       `);
-      this.tableEnsured = true;
+      PostgresRateLimitStore.tableEnsured = true;
     } catch (err) {
       const config = getBackendConfig();
       if (config.isProduction) {
@@ -176,15 +251,134 @@ export class PostgresRateLimitStore implements IRateLimitStore {
 
   public async set(key: string, entry: RateLimitEntry): Promise<void> {
     await this.ensureTable();
+    const category = key.split(':')[0] || 'GENERAL';
+    const identifier = key.substring(category.length + 1) || key;
     await connectionManager.query(
-      `INSERT INTO rate_limits (key, timestamps, blocked_until, updated_at)
-       VALUES ($1, $2, $3, NOW())
+      `INSERT INTO rate_limits (key, tier, identifier, timestamps, blocked_until, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
        ON CONFLICT (key) DO UPDATE SET
          timestamps = EXCLUDED.timestamps,
          blocked_until = EXCLUDED.blocked_until,
          updated_at = NOW()`,
-      [key, JSON.stringify(entry.timestamps), entry.blockedUntil ?? null]
+      [key, category, identifier, JSON.stringify(entry.timestamps), entry.blockedUntil ? Math.floor(entry.blockedUntil) : null]
     );
+  }
+
+  public async checkAndRecord(
+    category: 'AUTH' | 'TELEMETRY' | 'GENERAL' | 'ADMIN',
+    identifier: string,
+    policy: RateLimitPolicy
+  ): Promise<RateLimitResult> {
+    await this.ensureTable();
+    const key = `${category}:${identifier}`;
+
+    return connectionManager.withTransaction(async (client) => {
+      // 1. Authoritative PostgreSQL clock (ensures multi-instance synchronization)
+      let now = Date.now();
+      try {
+        const clockRes = await client.query<{ now_ms: string | number }>(
+          'SELECT FLOOR(EXTRACT(EPOCH FROM NOW()) * 1000)::bigint AS now_ms'
+        );
+        const parsedClock = Number(clockRes.rows[0]?.now_ms);
+        if (Number.isFinite(parsedClock) && parsedClock > 0) {
+          now = Math.floor(parsedClock);
+        }
+      } catch {
+        now = Date.now();
+      }
+
+      // 2. Ensure row exists for atomic row locking
+      await client.query(
+        `INSERT INTO rate_limits (key, tier, identifier, timestamps, blocked_until, updated_at)
+         VALUES ($1, $2, $3, '[]'::jsonb, NULL, NOW())
+         ON CONFLICT (key) DO NOTHING`,
+        [key, category, identifier]
+      );
+
+      // 3. Acquire row-level lock FOR UPDATE (serializes concurrent requests for same key)
+      const res = await client.query<{ timestamps: unknown; blocked_until: string | null }>(
+        'SELECT timestamps, blocked_until FROM rate_limits WHERE key = $1 FOR UPDATE',
+        [key]
+      );
+
+      let timestamps: number[] = [];
+      let blockedUntil: number | undefined;
+
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        if (Array.isArray(row.timestamps)) {
+          timestamps = row.timestamps.map((t) => Math.floor(Number(t)));
+        } else if (typeof row.timestamps === 'string') {
+          try {
+            timestamps = JSON.parse(row.timestamps).map((t: unknown) => Math.floor(Number(t)));
+          } catch {
+            timestamps = [];
+          }
+        }
+        if (row.blocked_until) {
+          blockedUntil = Math.floor(Number(row.blocked_until));
+        }
+      }
+
+      // 4. Check if actively blocked
+      if (blockedUntil && blockedUntil > now) {
+        const retryAfter = Math.max(1, Math.ceil((blockedUntil - now) / 1000));
+        return {
+          allowed: false,
+          limit: policy.maxRequests,
+          remaining: 0,
+          resetSeconds: retryAfter,
+          retryAfterSeconds: retryAfter,
+        };
+      }
+
+      // 5. Prune timestamps outside current window
+      const windowStart = Math.floor(now - policy.windowMs);
+      timestamps = timestamps.filter((ts) => ts > windowStart);
+
+      // 6. Check if limit exceeded
+      if (timestamps.length >= policy.maxRequests) {
+        const oldest = timestamps[0];
+        const resetTime = oldest + policy.windowMs;
+        const retryAfter = Math.max(1, Math.ceil((resetTime - now) / 1000));
+        blockedUntil = Math.floor(now + retryAfter * 1000);
+
+        await client.query(
+          `UPDATE rate_limits
+           SET timestamps = $2, blocked_until = $3, updated_at = NOW()
+           WHERE key = $1`,
+          [key, JSON.stringify(timestamps), Math.floor(blockedUntil)]
+        );
+
+        return {
+          allowed: false,
+          limit: policy.maxRequests,
+          remaining: 0,
+          resetSeconds: retryAfter,
+          retryAfterSeconds: retryAfter,
+        };
+      }
+
+      // 7. Record allowed request
+      timestamps.push(Math.floor(now));
+      await client.query(
+        `UPDATE rate_limits
+         SET timestamps = $2, blocked_until = NULL, updated_at = NOW(), request_count = COALESCE(request_count, 0) + 1
+         WHERE key = $1`,
+        [key, JSON.stringify(timestamps)]
+      );
+
+      const remaining = policy.maxRequests - timestamps.length;
+      const oldest = timestamps[0];
+      const resetSeconds = Math.max(1, Math.ceil((oldest + policy.windowMs - now) / 1000));
+
+      return {
+        allowed: true,
+        limit: policy.maxRequests,
+        remaining,
+        resetSeconds,
+      };
+    });
   }
 
   public async delete(key: string): Promise<void> {
@@ -195,6 +389,11 @@ export class PostgresRateLimitStore implements IRateLimitStore {
   public async prune(): Promise<void> {
     await this.ensureTable();
     await connectionManager.query("DELETE FROM rate_limits WHERE updated_at < NOW() - INTERVAL '1 hour'");
+    try {
+      await connectionManager.query("DELETE FROM rate_limit_windows WHERE updated_at < NOW() - INTERVAL '2 hours'");
+    } catch {
+      // ignore
+    }
   }
 
   public isPersistent(): boolean {
@@ -280,6 +479,21 @@ export class RateLimiter {
     identifier: string
   ): Promise<RateLimitResult> {
     const policy = RATE_LIMIT_POLICIES[category] || RATE_LIMIT_POLICIES.GENERAL;
+    const config = getBackendConfig();
+
+    try {
+      if (typeof this.store.checkAndRecord === 'function') {
+        return await this.store.checkAndRecord(category, identifier, policy);
+      }
+    } catch (err) {
+      if (config.isProduction) {
+        throw new Error(
+          `[MineCare RateLimiter] Production rate check failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      return new MemoryRateLimitStore().checkAndRecord(category, identifier, policy);
+    }
+
     const now = Date.now();
     const key = `${category}:${identifier}`;
 
@@ -288,13 +502,11 @@ export class RateLimiter {
       const existing = await this.store.get(key);
       entry = existing || { timestamps: [] };
     } catch (err) {
-      const config = getBackendConfig();
       if (config.isProduction) {
         throw new Error(
           `[MineCare RateLimiter] Production rate check failed: ${err instanceof Error ? err.message : String(err)}`
         );
       }
-      // In development / test, initialize fresh entry
       entry = { timestamps: [] };
     }
 
@@ -374,3 +586,4 @@ export class RateLimiter {
     }
   }
 }
+

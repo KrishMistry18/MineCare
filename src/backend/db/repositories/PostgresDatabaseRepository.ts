@@ -7,6 +7,7 @@
 
 import crypto from 'crypto';
 import { connectionManager, type IConnectionManager } from '../connection';
+import { getBackendConfig } from '../../config/env';
 import type {
   DbMineZone,
   DbWorker,
@@ -1264,6 +1265,11 @@ export class PostgresDatabaseRepository implements IDatabaseRepository {
   }
 
   public async ping(): Promise<boolean> {
+    const config = getBackendConfig();
+    if (config.isProduction && this.cm.isPgMem()) {
+      return false;
+    }
     return this.cm.testConnection();
   }
 }
+

@@ -18,6 +18,7 @@ import { Readable } from 'stream';
 import type { IDatabaseRepository } from './db/repositories/interfaces';
 import { PostgresDatabaseRepository } from './db/repositories/PostgresDatabaseRepository';
 import { DatabaseRepository } from './db/DatabaseRepository';
+import { connectionManager } from './db/connection';
 import { TelemetryValidator } from './validation/TelemetryValidator';
 import { SafetyEngine } from './safety/SafetyEngine';
 import { AlertEngine } from './alerts/AlertEngine';
@@ -44,6 +45,8 @@ export class BackendApp {
   private db: IDatabaseRepository;
   private authManager: AuthManager;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private readinessCache: { ready: boolean; timestamp: number } | null = null;
+  private lastKnownDbStatus: 'CONNECTED' | 'DISCONNECTED' | 'UNKNOWN' = 'CONNECTED';
 
   private constructor(customDb?: IDatabaseRepository) {
     const config = getBackendConfig();
@@ -113,6 +116,10 @@ export class BackendApp {
     if (BackendApp.instance?.heartbeatTimer) {
       clearInterval(BackendApp.instance.heartbeatTimer);
     }
+    if (BackendApp.instance) {
+      BackendApp.instance.readinessCache = null;
+      BackendApp.instance.lastKnownDbStatus = 'CONNECTED';
+    }
     AuthManager.resetInstance();
     RateLimiter.resetInstance();
     DeviceAuthManager.resetRegistry();
@@ -124,7 +131,9 @@ export class BackendApp {
   public setDb(db: IDatabaseRepository): void {
     this.db = db;
     this.authManager.setDb(db);
+    this.readinessCache = null;
   }
+
 
   public getDb(): IDatabaseRepository {
     return this.db;
@@ -167,6 +176,14 @@ export class BackendApp {
 
     // 5. Health, Liveness, and Readiness Probes (/healthz, /livez, /readyz)
     if (pathname === '/livez' || pathname === '/api/v1/livez') {
+      if (method !== 'GET' && method !== 'HEAD') {
+        this.sendJson(
+          res,
+          405,
+          ApiError.methodNotAllowed(requestId, `Method ${method} not allowed on liveness endpoint`)
+        );
+        return true;
+      }
       this.sendJson(res, 200, {
         status: 'ALIVE',
         live: true,
@@ -177,17 +194,61 @@ export class BackendApp {
     }
 
     if (pathname === '/readyz' || pathname === '/api/v1/readyz') {
-      let isReady = false;
-      try {
-        if (typeof (this.db as any).ping === 'function') {
-          isReady = await (this.db as any).ping();
-        } else {
-          const health = await this.db.getSystemHealth();
-          isReady = Boolean(health && health.services?.database?.status === 'CONNECTED');
-        }
-      } catch {
-        isReady = false;
+      if (method !== 'GET' && method !== 'HEAD') {
+        this.sendJson(
+          res,
+          405,
+          ApiError.methodNotAllowed(requestId, `Method ${method} not allowed on readiness endpoint`)
+        );
+        return true;
       }
+
+      const config = getBackendConfig();
+
+      // In production mode, reject development test doubles (pg-mem, in-memory mock repo)
+      if (config.isProduction) {
+        if (connectionManager.isPgMem() || !(this.db instanceof PostgresDatabaseRepository)) {
+          this.lastKnownDbStatus = 'DISCONNECTED';
+          this.sendJson(
+            res,
+            503,
+            ApiError.serviceUnavailable(
+              requestId,
+              'Service Unavailable: Production mode requires authoritative PostgreSQL connection'
+            )
+          );
+          return true;
+        }
+      }
+
+      // Check short-lived readiness cache (2000ms TTL)
+      const now = Date.now();
+      let isReady = false;
+      if (this.readinessCache && (now - this.readinessCache.timestamp < 2000)) {
+        isReady = this.readinessCache.ready;
+      } else {
+        try {
+          // Bounded-time database ping (timeout after 3000ms)
+          const timeoutPromise = new Promise<boolean>((_, reject) =>
+            setTimeout(() => reject(new Error('Database connectivity check timed out')), 3000).unref()
+          );
+
+          const pingPromise = (async () => {
+            if (typeof (this.db as any).ping === 'function') {
+              return await (this.db as any).ping();
+            }
+            const health = await this.db.getSystemHealth();
+            return Boolean(health && health.services?.database?.status === 'CONNECTED');
+          })();
+
+          isReady = await Promise.race([pingPromise, timeoutPromise]);
+        } catch {
+          isReady = false;
+        }
+        this.readinessCache = { ready: isReady, timestamp: now };
+      }
+
+      this.lastKnownDbStatus = isReady ? 'CONNECTED' : 'DISCONNECTED';
 
       if (isReady) {
         this.sendJson(res, 200, {
@@ -207,22 +268,30 @@ export class BackendApp {
     }
 
     if (pathname === '/healthz' || pathname === '/api/v1/healthz') {
-      try {
-        const health = await this.db.getSystemHealth();
-        const isOk = health.status === 'OPERATIONAL' || health.status === 'DEGRADED';
-        this.sendJson(res, isOk ? 200 : 503, {
-          status: health.status,
-          uptimeSeconds: health.uptimeSeconds,
-          services: health.services,
-          timestamp: health.timestamp,
-        });
-      } catch {
+      if (method !== 'GET' && method !== 'HEAD') {
         this.sendJson(
           res,
-          503,
-          ApiError.serviceUnavailable(requestId, 'System health check failed')
+          405,
+          ApiError.methodNotAllowed(requestId, `Method ${method} not allowed on health endpoint`)
         );
+        return true;
       }
+
+      // Basic liveness probe answers: "Is the process alive?"
+      // Does not require or block on a database query for basic liveness.
+      const uptimeSec = Math.floor(process.uptime());
+      const dbStatus = this.lastKnownDbStatus;
+
+      this.sendJson(res, 200, {
+        status: 'OPERATIONAL',
+        live: true,
+        uptimeSeconds: uptimeSec,
+        services: {
+          process: { status: 'ALIVE' },
+          database: { status: dbStatus },
+        },
+        timestamp: new Date().toISOString(),
+      });
       return true;
     }
 
@@ -230,8 +299,8 @@ export class BackendApp {
       return false; // Not handled by API router
     }
 
-    const rawIp = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1';
-    const clientIp = Array.isArray(rawIp) ? rawIp[0] : String(rawIp).split(',')[0].trim();
+    const clientIp = this.resolveClientAddress(req);
+
 
     try {
       // 6. General API Rate Limiting (300 requests/minute on general endpoints)
@@ -265,10 +334,22 @@ export class BackendApp {
       // =========================================================================
 
       // POST /api/v1/auth/login
-      if (pathname === '/api/v1/auth/login' && method === 'POST') {
+      if (pathname === '/api/v1/auth/login') {
+        if (method !== 'POST') {
+          this.sendJson(
+            res,
+            405,
+            ApiError.methodNotAllowed(requestId, `Method ${method} not allowed on /api/v1/auth/login`)
+          );
+          return true;
+        }
         const body = await this.readJsonBody(req, pathname);
         if (body._tooLarge) {
           this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+        if (body._unsupportedMediaType) {
+          this.sendJson(res, 415, ApiError.unsupportedMediaType(requestId));
           return true;
         }
         if (body._malformed) {
@@ -359,10 +440,22 @@ export class BackendApp {
       // =========================================================================
       // 2. TELEMETRY INGESTION (Public / Sensor Ingestion)
       // =========================================================================
-      if (pathname === '/api/v1/telemetry' && method === 'POST') {
+      if (pathname === '/api/v1/telemetry') {
+        if (method !== 'POST') {
+          this.sendJson(
+            res,
+            405,
+            ApiError.methodNotAllowed(requestId, `Method ${method} not allowed on /api/v1/telemetry`)
+          );
+          return true;
+        }
         const body = await this.readJsonBody(req, pathname);
         if (body._tooLarge) {
           this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+        if (body._unsupportedMediaType) {
+          this.sendJson(res, 415, ApiError.unsupportedMediaType(requestId));
           return true;
         }
 
@@ -557,7 +650,15 @@ export class BackendApp {
       // =========================================================================
       // 3. SYSTEM HEALTH (Public Diagnostics)
       // =========================================================================
-      if (pathname === '/api/v1/system/health' && method === 'GET') {
+      if (pathname === '/api/v1/system/health') {
+        if (method !== 'GET' && method !== 'HEAD') {
+          this.sendJson(
+            res,
+            405,
+            ApiError.methodNotAllowed(requestId, `Method ${method} not allowed on /api/v1/system/health`)
+          );
+          return true;
+        }
         const health = await this.db.getSystemHealth();
         this.sendJson(res, 200, health);
         return true;
@@ -566,10 +667,22 @@ export class BackendApp {
       // =========================================================================
       // 3.1 SIMULATION SCENARIO INGESTION (Supervisor / Admin Simulation)
       // =========================================================================
-      if (pathname === '/api/v1/simulation/scenario' && method === 'POST') {
+      if (pathname === '/api/v1/simulation/scenario') {
+        if (method !== 'POST') {
+          this.sendJson(
+            res,
+            405,
+            ApiError.methodNotAllowed(requestId, `Method ${method} not allowed on /api/v1/simulation/scenario`)
+          );
+          return true;
+        }
         const body = await this.readJsonBody(req, pathname);
         if (body._tooLarge) {
           this.sendJson(res, 413, ApiError.payloadTooLarge(requestId));
+          return true;
+        }
+        if (body._unsupportedMediaType) {
+          this.sendJson(res, 415, ApiError.unsupportedMediaType(requestId));
           return true;
         }
 
@@ -585,6 +698,25 @@ export class BackendApp {
             res,
             403,
             ApiError.forbidden(requestId, 'Forbidden: Only supervisors and administrators may trigger simulation scenarios')
+          );
+          return true;
+        }
+
+        // Rate limiting: ADMIN tier (60 requests / minute) on privileged simulation route
+        const simIdentifier = `SIM_${currentUser.id || currentUser.email || clientIp}`;
+        const simRateCheck = await RateLimiter.getInstance().checkLimit('ADMIN', simIdentifier);
+        RateLimiter.getInstance().applyHeaders(res, simRateCheck);
+
+        if (!simRateCheck.allowed) {
+          MetricsCollector.getInstance().recordRateLimitEvent('ADMIN', simIdentifier);
+          this.sendJson(
+            res,
+            429,
+            ApiError.rateLimited(
+              requestId,
+              simRateCheck.retryAfterSeconds || 1,
+              'Too Many Requests: Simulation scenario rate limit exceeded'
+            )
           );
           return true;
         }
@@ -2000,9 +2132,12 @@ export class BackendApp {
       else if (statusCode === 401) code = 'UNAUTHORIZED';
       else if (statusCode === 403) code = 'FORBIDDEN';
       else if (statusCode === 404) code = 'NOT_FOUND';
+      else if (statusCode === 405) code = 'METHOD_NOT_ALLOWED';
       else if (statusCode === 409) code = 'CONFLICT';
       else if (statusCode === 413) code = 'PAYLOAD_TOO_LARGE';
       else if (statusCode === 414) code = 'URI_TOO_LONG';
+      else if (statusCode === 415) code = 'UNSUPPORTED_MEDIA_TYPE';
+      else if (statusCode === 422) code = 'UNPROCESSABLE_ENTITY';
       else if (statusCode === 429) code = 'RATE_LIMITED';
       else if (statusCode === 500) code = 'INTERNAL_SERVER_ERROR';
       else if (statusCode === 503) code = 'SERVICE_UNAVAILABLE';
@@ -2015,10 +2150,52 @@ export class BackendApp {
     res.end(JSON.stringify(data));
   }
 
+  private resolveClientAddress(req: IncomingMessage): string {
+    const rawIp = req.socket?.remoteAddress || '127.0.0.1';
+    let resolved = rawIp;
+
+    const xff = req.headers['x-forwarded-for'];
+    if (xff) {
+      const first = (Array.isArray(xff) ? xff[0] : String(xff)).split(',')[0].trim();
+      if (/^[0-9a-fA-F:.]+$/.test(first) && first.length <= 45) {
+        resolved = first;
+      }
+    } else {
+      const realIp = req.headers['x-real-ip'];
+      if (realIp && typeof realIp === 'string') {
+        const candidate = realIp.trim();
+        if (/^[0-9a-fA-F:.]+$/.test(candidate) && candidate.length <= 45) {
+          resolved = candidate;
+        }
+      }
+    }
+
+    if (resolved.startsWith('::ffff:')) {
+      resolved = resolved.substring(7);
+    }
+    if (resolved === '::1') {
+      resolved = '127.0.0.1';
+    }
+
+    return resolved;
+  }
+
   private async readJsonBody(
     req: IncomingMessage,
     pathname: string = ''
-  ): Promise<Record<string, unknown> & { _malformed?: boolean; _tooLarge?: boolean }> {
+  ): Promise<Record<string, unknown> & { _malformed?: boolean; _tooLarge?: boolean; _unsupportedMediaType?: boolean }> {
+    const contentType = req.headers['content-type'];
+    if (contentType && typeof contentType === 'string') {
+      const lower = contentType.toLowerCase().trim();
+      if (
+        !lower.includes('application/json') &&
+        !lower.includes('*/*') &&
+        !lower.includes('+json') &&
+        !lower.includes('text/json')
+      ) {
+        return { _unsupportedMediaType: true };
+      }
+    }
     const limit = RequestLimiter.getLimitForPath(pathname);
     const result = await RequestLimiter.readLimitedJsonBody(req, limit);
     if (result.tooLarge) {

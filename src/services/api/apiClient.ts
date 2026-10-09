@@ -98,14 +98,20 @@ export async function apiRequest<T>(
       }
 
       const reqId = requestId || (errorDetails?.error?.requestId as string | undefined);
+      const errorMessage =
+        (typeof errorDetails?.error?.message === 'string' && errorDetails.error.message) ||
+        (typeof errorDetails?.message === 'string' && errorDetails.message) ||
+        `API request failed: ${response.status} ${response.statusText}`;
+
       const apiErr = new ApiError(
-        `API request failed: ${response.status} ${response.statusText}`,
+        errorMessage,
         response.status,
         errorDetails,
         reqId
       );
       notifyError(apiErr);
       throw apiErr;
+
     }
 
     return (await response.json()) as T;

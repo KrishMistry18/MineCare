@@ -22,6 +22,7 @@ import type {
 import { INITIAL_MINE_ZONES } from '../../types/zone';
 import { INITIAL_WORKERS } from '../../data/mockData';
 import { StructuredLogger } from '../security/StructuredLogger';
+import { getBackendConfig } from '../config/env';
 
 export class DatabaseRepository {
   private static instance: DatabaseRepository | null = null;
@@ -693,6 +694,11 @@ export class DatabaseRepository {
   }
 
   public async ping(): Promise<boolean> {
+    const config = getBackendConfig();
+    if (config.isProduction) {
+      return false;
+    }
     return true;
   }
 }
+

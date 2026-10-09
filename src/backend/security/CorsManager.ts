@@ -7,6 +7,8 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import { getBackendConfig } from '../config/env';
+import { ApiError } from './ApiError';
+import { RequestIdManager } from './RequestId';
 
 export class CorsManager {
   /**
@@ -65,9 +67,10 @@ export class CorsManager {
     // Handle OPTIONS Preflight
     if (req.method?.toUpperCase() === 'OPTIONS') {
       if (!isAllowed && isProduction) {
+        const requestId = RequestIdManager.resolveRequestId(req, res);
         res.statusCode = 403;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'CORS origin not allowed' }));
+        res.end(JSON.stringify(ApiError.forbidden(requestId, 'Forbidden: CORS origin not allowed')));
         return false;
       }
       res.statusCode = 204;
@@ -76,12 +79,14 @@ export class CorsManager {
     }
 
     if (!isAllowed && isProduction) {
+      const requestId = RequestIdManager.resolveRequestId(req, res);
       res.statusCode = 403;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'CORS origin not allowed' }));
+      res.end(JSON.stringify(ApiError.forbidden(requestId, 'Forbidden: CORS origin not allowed')));
       return false;
     }
 
     return true; // Allowed to proceed to router
   }
 }
+

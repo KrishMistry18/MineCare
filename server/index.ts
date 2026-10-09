@@ -15,6 +15,7 @@ import { getBackendConfig } from '../src/backend/config/env';
 import { RealtimePublisher } from '../src/backend/realtime/RealtimePublisher';
 import { StructuredLogger } from '../src/backend/security/StructuredLogger';
 import { RequestIdManager } from '../src/backend/security/RequestId';
+import { ApiError } from '../src/backend/security/ApiError';
 
 const config = getBackendConfig();
 const port = Number(process.env.PORT || config.port || 3001);
@@ -59,20 +60,23 @@ async function bootstrap() {
     try {
       const handled = await app.handleRequest(req, res);
       if (!handled) {
+        const requestId = RequestIdManager.resolveRequestId(req, res);
         res.statusCode = 404;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'Not Found' }));
+        res.end(JSON.stringify(ApiError.notFound(requestId, `Not Found: ${req.url || '/'}`)));
       }
     } catch (err: unknown) {
+      const requestId = RequestIdManager.resolveRequestId(req, res);
       StructuredLogger.error({
-        requestId: RequestIdManager.resolveRequestId(req, res),
+        requestId,
         message: 'Internal server error handling HTTP request',
         meta: { error: err instanceof Error ? err.message : String(err) },
       });
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'Internal Server Error' }));
+      res.end(JSON.stringify(ApiError.internal(requestId, err, config.isProduction)));
     }
+
   });
 
   server.listen(port, host, () => {
