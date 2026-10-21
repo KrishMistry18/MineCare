@@ -230,9 +230,11 @@ export class AuthManager {
       if (canonical) {
         profile = {
           id: canonical.id,
+          auth_user_id: canonical.id,
           email: cleanEmail,
           name: canonical.name,
           role: canonical.role,
+          worker_id: cleanEmail === 'worker.marak@minecare.local' ? 'WRK-001' : cleanEmail === 'worker.kujur@minecare.local' ? 'WRK-002' : null,
           active: true,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
