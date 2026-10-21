@@ -644,13 +644,16 @@ curl -X POST https://api.minecare.local/api/v1/admin/helmets/MC-001/device-token
 
 ---
 
-## 23. Author & Credits
+## 23. Authors & Credits
 
 **MineCare — Smart Mine Safety Helmet Platform**
 
-- **Developer**: Krish Mistry ([@KrishMistry18](https://github.com/KrishMistry18))
-- **Email**: `mistrykrish2005@gmail.com`
-- **Project Repository**: [https://github.com/KrishMistry18/Minecare](https://github.com/KrishMistry18/Minecare)
+- **Developers**:
+  - **Maxwell Mathew** ([@Maxwell343](https://github.com/Maxwell343)) — `mathew.maxwell2021@gmail.com`
+  - **Krish Mistry** ([@KrishMistry18](https://github.com/KrishMistry18)) — `mistrykrish2005@gmail.com`
+- **Project Repositories**:
+  - [https://github.com/Maxwell343/MineCare](https://github.com/Maxwell343/MineCare)
+  - [https://github.com/KrishMistry18/Minecare](https://github.com/KrishMistry18/Minecare)
 
 ---
 
