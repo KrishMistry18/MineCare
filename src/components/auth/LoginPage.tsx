@@ -7,7 +7,7 @@
 
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { HardHat, Lock, Mail, AlertTriangle, Loader2, ArrowRight, ShieldCheck } from 'lucide-react';
+import { HardHat, Lock, Mail, AlertTriangle, Loader2, ArrowRight, ShieldCheck, Eye, EyeOff, KeyRound } from 'lucide-react';
 
 interface LoginPageProps {
   onSuccess?: () => void;
@@ -19,8 +19,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const fillCredentials = (fillEmail: string, fillPass: string) => {
+    setEmail(fillEmail);
+    setPassword(fillPass);
+    setLocalError(null);
+    clearError();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -120,7 +128,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="operator@minecare.local"
+                  placeholder="admin@minecare.local"
                   required
                   disabled={loading}
                   className="w-full pl-9 pr-3 py-2 bg-[#060a12] border border-[#1b263b] rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/50 transition-colors"
@@ -137,14 +145,23 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••••••"
                   required
                   disabled={loading}
-                  className="w-full pl-9 pr-3 py-2 bg-[#060a12] border border-[#1b263b] rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/50 transition-colors"
+                  className="w-full pl-9 pr-10 py-2 bg-[#060a12] border border-[#1b263b] rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/50 transition-colors font-mono"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                  tabIndex={-1}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
 
@@ -167,6 +184,39 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
             </button>
           </form>
 
+          {/* Quick-Fill Demo Credentials */}
+          <div className="mt-6 pt-5 border-t border-[#182436]">
+            <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-2.5">
+              <span className="flex items-center gap-1.5 text-cyan-400">
+                <KeyRound className="w-3.5 h-3.5" />
+                DEMO PRE-CONFIGURED ACCOUNTS:
+              </span>
+              <span className="text-slate-500">1-Click Auto-Fill</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => fillCredentials('admin@minecare.local', 'Admin#Password2026')}
+                className="py-1.5 px-2 bg-[#0d1624] hover:bg-cyan-950/70 border border-[#1b2b44] hover:border-cyan-500/50 rounded text-xs font-mono text-cyan-300 transition-all text-center cursor-pointer"
+              >
+                Admin
+              </button>
+              <button
+                type="button"
+                onClick={() => fillCredentials('supervisor@minecare.local', 'Supervisor#Password2026')}
+                className="py-1.5 px-2 bg-[#0d1624] hover:bg-cyan-950/70 border border-[#1b2b44] hover:border-cyan-500/50 rounded text-xs font-mono text-cyan-300 transition-all text-center cursor-pointer"
+              >
+                Supervisor
+              </button>
+              <button
+                type="button"
+                onClick={() => fillCredentials('worker.marak@minecare.local', 'Worker#Password2026')}
+                className="py-1.5 px-2 bg-[#0d1624] hover:bg-cyan-950/70 border border-[#1b2b44] hover:border-cyan-500/50 rounded text-xs font-mono text-cyan-300 transition-all text-center cursor-pointer"
+              >
+                Worker
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Security Notice Footer */}
