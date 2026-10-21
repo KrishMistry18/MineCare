@@ -125,6 +125,12 @@ export class AuthManager {
             });
             // Fall through to in-process fallback authentication below
           } else {
+            if (isUpstreamFailure) {
+              return {
+                error: 'Invalid password. (Cloud Auth is restricted by Supabase quota; use provisioned console password: Admin#Password2026 or MineCare#2026!)',
+                code: 401,
+              };
+            }
             return { error: error?.message || 'Invalid email or password', code: 401 };
           }
         } else {
