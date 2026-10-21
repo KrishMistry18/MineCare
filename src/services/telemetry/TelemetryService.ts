@@ -538,10 +538,6 @@ export class TelemetryService {
             buzzer: false,
           };
         }
-        const helmet = this.helmets.find((h) => h.id === alert.helmetId);
-        if (helmet) {
-          helmet.status = 'SAFE';
-        }
       }
 
       this.notifyListeners();
