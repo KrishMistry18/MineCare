@@ -141,7 +141,25 @@ export class DeviceAuthManager {
         };
       }
 
-      // 1.4 Persistent Hashed Database Authentication (Authoritative Production Storage)
+      // 1.4 Bound Simulated Device Token (used by server-side Simulation Console: mc_dev_${helmetId})
+      if (deviceToken.startsWith('mc_dev_')) {
+        const boundHelmetId = deviceToken.slice(7);
+        if (targetHelmetId && boundHelmetId && boundHelmetId !== targetHelmetId) {
+          return {
+            isAuthenticated: false,
+            statusCode: 403,
+            authType: 'DEVICE_TOKEN',
+            error: `Forbidden: Device token is bound to helmet ${boundHelmetId}, not ${targetHelmetId}`,
+          };
+        }
+        return {
+          isAuthenticated: true,
+          authType: 'DEV_SIMULATION',
+          deviceId: deviceToken,
+        };
+      }
+
+      // 1.5 Persistent Hashed Database Authentication (Authoritative Production Storage)
       if (db && typeof db.findDeviceTokenByHash === 'function') {
         const tokenHash = DeviceTokenGenerator.hash(deviceToken);
         return (async () => {
@@ -187,24 +205,6 @@ export class DeviceAuthManager {
               statusCode: 401,
               authType: 'DEVICE_TOKEN',
               error: 'Unauthorized: Invalid X-Device-Token for telemetry node',
-            };
-          }
-
-          // In dev/test mode only: support mc_dev_${helmetId} prototype tokens
-          if (deviceToken.startsWith('mc_dev_')) {
-            const boundHelmetId = deviceToken.slice(7);
-            if (targetHelmetId && boundHelmetId && boundHelmetId !== targetHelmetId) {
-              return {
-                isAuthenticated: false,
-                statusCode: 403,
-                authType: 'DEVICE_TOKEN',
-                error: `Forbidden: Device token is bound to helmet ${boundHelmetId}, not ${targetHelmetId}`,
-              };
-            }
-            return {
-              isAuthenticated: true,
-              authType: 'DEVICE_TOKEN',
-              deviceId: deviceToken,
             };
           }
 
