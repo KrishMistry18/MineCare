@@ -573,13 +573,6 @@ export class BackendApp {
           created_at: new Date().toISOString(),
         };
 
-        await this.db.saveTelemetry(telemetryRecord);
-        await this.db.updateHelmet(packet.helmetId, {
-          status: safety.status,
-          online: true,
-          last_seen: packet.timestamp,
-        });
-
         // Authoritative Alert Lifecycle
         const helmet = await this.db.getHelmet(packet.helmetId);
         const existingAlerts = await this.db.getActiveAlerts();
@@ -604,6 +597,28 @@ export class BackendApp {
           await this.db.resolveAlert(resolved.id, resolved.supervisor_notes || 'Auto-resolved');
           MetricsCollector.getInstance().recordAlertResolved(resolved.id);
         }
+
+        // Determine effective helmet status:
+        // If there are active unresolved alerts for this helmet, preserve the alert status!
+        const activeHelmetAlerts = existingAlerts.filter(
+          (a) => a.helmet_id === packet.helmetId && a.status !== 'RESOLVED'
+        );
+        const hasCritical = activeHelmetAlerts.some((a) => a.severity === 'CRITICAL');
+        const hasWarning = activeHelmetAlerts.some((a) => a.severity === 'WARNING');
+
+        const effectiveHelmetStatus =
+          safety.status === 'DANGER' || hasCritical
+            ? 'DANGER'
+            : safety.status === 'WARNING' || hasWarning
+            ? 'WARNING'
+            : 'SAFE';
+
+        await this.db.saveTelemetry(telemetryRecord);
+        await this.db.updateHelmet(packet.helmetId, {
+          status: effectiveHelmetStatus,
+          online: true,
+          last_seen: packet.timestamp,
+        });
 
         // Operational Hazard Tracking
         MetricsCollector.getInstance().recordTelemetryPacket(packet.packetId, packet.helmetId);
@@ -640,11 +655,17 @@ export class BackendApp {
         this.sendJson(res, 201, {
           success: true,
           packetId: packet.packetId,
+          helmetStatus: effectiveHelmetStatus,
+          hasActiveAlerts: activeHelmetAlerts.length > 0,
           safety: {
-            status: safety.status,
+            status: effectiveHelmetStatus,
             primaryTrigger: safety.primaryTrigger,
             triggerDetails: safety.triggerDetails,
-            outputs: safety.outputs,
+            outputs: {
+              greenLed: effectiveHelmetStatus === 'SAFE',
+              redLed: effectiveHelmetStatus !== 'SAFE',
+              buzzer: effectiveHelmetStatus === 'DANGER',
+            },
           },
           alertCreated: Boolean(alertResult.createdAlert),
           alertsResolvedCount: alertResult.resolvedAlerts.length,
@@ -1960,6 +1981,23 @@ export class BackendApp {
         } else {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
+
+          // If no remaining active alerts for this helmet, restore helmet status to SAFE
+          try {
+            const activeAlerts = await this.db.getActiveAlerts();
+            const helmetRemaining = activeAlerts.filter(
+              (a) => a.helmet_id === alert.helmet_id && a.id !== alert.id && a.status !== 'RESOLVED'
+            );
+            if (helmetRemaining.length === 0) {
+              await this.db.updateHelmet(alert.helmet_id, { status: 'SAFE' });
+              const updatedHelmet = await this.db.getHelmetWithDetails(alert.helmet_id);
+              if (updatedHelmet) {
+                RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
+              }
+            }
+          } catch {
+            // non-blocking
+          }
 
           await this.db.logAuditAction({
             user_id: currentUser.id,

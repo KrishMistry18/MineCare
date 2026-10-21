@@ -26,18 +26,11 @@ export class AlertEngine {
     const resolvedAlerts: DbAlert[] = [];
     let createdAlert: DbAlert | null = null;
 
-    // 1. RECOVERY: If helmet returned to SAFE, auto-resolve any active hazard alerts
+    // 1. Alert Persistence: Active hazard alerts (SOS, falls, gas, temperature)
+    // MUST NOT auto-resolve on a single normal packet. They require authoritative manual resolution
+    // by the operator / supervisor from the Alert Console.
     if (evaluation.status === 'SAFE') {
-      alertsStore.forEach((alert) => {
-        if (alert.helmet_id === helmetId && alert.status !== 'RESOLVED' && alert.type !== 'HELMET_OFFLINE') {
-          alert.status = 'RESOLVED';
-          alert.resolved_at = now;
-          alert.supervisor_notes = 'Auto-resolved: Environmental and biometric metrics restored to safe baseline.';
-          alert.updated_at = now;
-          resolvedAlerts.push(alert);
-        }
-      });
-      return { createdAlert: null, resolvedAlerts };
+      return { createdAlert: null, resolvedAlerts: [] };
     }
 
     // 2. Map evaluation trigger to alert category

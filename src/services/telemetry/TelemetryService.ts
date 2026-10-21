@@ -99,11 +99,11 @@ export class TelemetryService {
       this.notifyListeners();
     });
 
-    // 4. Connect telemetry provider simulator and subscribe
+    // 4. Do NOT auto-run background demo simulation — live data comes from hardware and backend realtime!
     this.provider.subscribeAll((packet) => {
       this.handleRealtimeTelemetry(packet);
     });
-    this.provider.connect();
+    // Automated background demo simulation disabled so it does not overwrite live hardware data.
 
     // 5. Asynchronously load initial authoritative helmets and active alerts
     void this.loadInitialState();
@@ -242,13 +242,29 @@ export class TelemetryService {
     this.lastSeenTimestamps.set(helmetId, Date.now());
     this.connectivityStates.set(helmetId, 'ONLINE');
 
+    // Check for active unresolved alerts for this helmet
+    const activeAlertsForHelmet = this.alerts.filter((a) => a.helmetId === helmetId && !a.resolved);
+    const hasActiveCritical = activeAlertsForHelmet.some(
+      (a) => a.severity === 'CRITICAL' || a.safetyStatus === 'DANGER'
+    );
+    const hasActiveWarning = activeAlertsForHelmet.some(
+      (a) => a.severity === 'WARNING' || a.safetyStatus === 'WARNING'
+    );
+
+    const effectiveStatus =
+      safetyStatus === 'DANGER' || hasActiveCritical
+        ? 'DANGER'
+        : safetyStatus === 'WARNING' || hasActiveWarning
+        ? 'WARNING'
+        : 'SAFE';
+
     // Update authoritative safety state
     this.safetyStates.set(helmetId, {
-      status: safetyStatus,
+      status: effectiveStatus,
       primaryTrigger:
-        safetyStatus === 'SAFE'
+        effectiveStatus === 'SAFE'
           ? 'NOMINAL'
-          : isSos
+          : isSos || hasActiveCritical
           ? 'SOS_BUTTON_TRIGGERED'
           : isFall || totalAccel > 15
           ? 'FALL_IMPACT_DETECTED'
@@ -259,9 +275,9 @@ export class TelemetryService {
           : 'HIGH_TEMPERATURE',
       triggerDetails: [],
       outputs: {
-        greenLed: safetyStatus === 'SAFE',
-        redLed: safetyStatus === 'DANGER',
-        buzzer: safetyStatus === 'DANGER',
+        greenLed: effectiveStatus === 'SAFE',
+        redLed: effectiveStatus === 'DANGER',
+        buzzer: effectiveStatus === 'DANGER',
       },
       isPrototypeNotice: true,
     });
@@ -507,6 +523,27 @@ export class TelemetryService {
       alert.resolved = true;
       alert.resolvedAt = new Date().toISOString();
       if (notes) alert.supervisorNotes = notes;
+
+      // Check if helmet still has any active unresolved alerts
+      const remainingForHelmet = this.alerts.filter((a) => a.helmetId === alert.helmetId && !a.resolved);
+      if (remainingForHelmet.length === 0) {
+        const existingSafety = this.safetyStates.get(alert.helmetId);
+        if (existingSafety) {
+          existingSafety.status = 'SAFE';
+          existingSafety.primaryTrigger = 'NOMINAL';
+          existingSafety.triggerDetails = [];
+          existingSafety.outputs = {
+            greenLed: true,
+            redLed: false,
+            buzzer: false,
+          };
+        }
+        const helmet = this.helmets.find((h) => h.id === alert.helmetId);
+        if (helmet) {
+          helmet.status = 'SAFE';
+        }
+      }
+
       this.notifyListeners();
     }
 

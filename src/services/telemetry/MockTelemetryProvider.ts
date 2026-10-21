@@ -106,8 +106,11 @@ export class MockTelemetryProvider implements ITelemetryProvider {
   }
 
   public async connect(): Promise<void> {
-    if (this.intervalTimer) return;
-    this.intervalTimer = setInterval(() => this.tick(), this.intervalMs);
+    // Automated background demo simulation disabled so it does not overwrite live hardware data.
+    if (this.intervalTimer) {
+      clearInterval(this.intervalTimer);
+      this.intervalTimer = null;
+    }
   }
 
   public async disconnect(): Promise<void> {
