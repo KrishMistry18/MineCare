@@ -17,9 +17,9 @@ SafetyEvaluationResult SafetyLogic::evaluate(const SensorReadings& readings) {
     result.fallDetected = (totalAccel > THRESHOLD_FALL_ACCEL_MS2);
 
     bool isSos = readings.sosPressed;
-    bool isFall = result.fallDetected;
+    bool isFall = readings.mpuValid && result.fallDetected;
     bool isHighGas = (readings.rawGasValue > THRESHOLD_RAW_GAS_ADC);
-    bool isHighTemp = (readings.temperature > THRESHOLD_TEMP_CELSIUS);
+    bool isHighTemp = readings.dhtValid && readings.tempValid && (readings.temperature > THRESHOLD_TEMP_CELSIUS);
     bool isSensorFault = (!readings.dhtValid || !readings.mpuValid);
 
     // 1. DANGER PRECEDENCE (SOS Button or Fall Impact)

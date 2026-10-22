@@ -287,7 +287,7 @@ async function runTests() {
   const acked = AlertEngine.acknowledge(alertTestStore, alertId, 'Shift Supervisor');
   assert(Boolean(acked && acked.status === 'ACKNOWLEDGED' && acked.acknowledged_by === 'Shift Supervisor'), 'ALERTS', 'Alert successfully acknowledged');
 
-  // Packet 3: Condition returns to SAFE -> Auto-resolve alert
+  // Packet 3: Condition returns to SAFE -> Active hazard alerts persist until manual resolution
   const alertPkt3 = { ...alertPkt1, sequenceNumber: 3, gasValue: 210 };
   const safetySafe = SafetyEngine.evaluate({
     temperature: 26,
@@ -296,8 +296,9 @@ async function runTests() {
     sosPressed: false,
   });
   const res3 = AlertEngine.processAlerts(alertTestStore, 'MC-003', 'W-003', alertPkt3, safetySafe);
-  assert(res3.resolvedAlerts.length === 1, 'ALERTS', 'Returning to safe condition auto-resolves active alert');
-  assert(alertTestStore[0].status === 'RESOLVED', 'ALERTS', 'Alert status in store transitioned to RESOLVED');
+  assert(res3.resolvedAlerts.length === 0, 'ALERTS', 'Returning to safe condition preserves active alert until supervisor resolution');
+  const resolved = AlertEngine.resolve(alertTestStore, alertId, 'Shift Supervisor');
+  assert(Boolean(resolved && alertTestStore[0].status === 'RESOLVED'), 'ALERTS', 'Alert status in store transitioned to RESOLVED');
 
   // =========================================================================
   // 5. ZONE ASSIGNMENT & HISTORY TESTS

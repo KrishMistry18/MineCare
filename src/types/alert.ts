@@ -34,6 +34,10 @@ export interface SafetyAlert {
     totalAcceleration: number;
     sosPressed: boolean;
     fallDetected: boolean;
+    dhtValid?: boolean;
+    mpuValid?: boolean;
+    tempValid?: boolean;
+    humidityValid?: boolean;
   };
   acknowledged: boolean;
   acknowledgedBy?: string;

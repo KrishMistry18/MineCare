@@ -18,10 +18,10 @@ The ESP8266 ESP-12E has strict hardware boot-strapping constraints on GPIO0, GPI
 | **DHT22** | `D2` | `GPIO4` | Single-Bus Digital | `VERIFIED SAFE` | 10kΩ pull-up resistor to 3.3V rail. Non-strapping pin. |
 | **MPU6050 SDA** | `D6` | `GPIO12` | I2C Data | `VERIFIED SAFE` | 4.7kΩ pull-up to 3.3V. Non-strapping pin. |
 | **MPU6050 SCL** | `D7` | `GPIO13` | I2C Clock | `VERIFIED SAFE` | 4.7kΩ pull-up to 3.3V. Non-strapping pin. |
-| **SOS Push Button** | `D1` | `GPIO5` | Digital Input | `VERIFIED SAFE` | Normally-open momentary switch to GND using internal `INPUT_PULLUP`. Non-strapping pin. |
+| **SOS Push Button** | `D5` | `GPIO14` | Digital Input | `VERIFIED SAFE` | Normally-open momentary switch to GND using internal `INPUT_PULLUP` (Active LOW). Debounced & persistently latched until cloud acknowledgement. |
 | **Green LED (Safe)** | `D0` | `GPIO16` | Digital Output | `VERIFIED SAFE` | Nominal status indicator (Active HIGH via 330Ω resistor to GND). |
 | **Red LED (Hazard)** | `D4` | `GPIO2` | Digital Output | `VERIFIED SAFE (Active LOW)` | **Boot Strapping Constraint**: GPIO2 must be HIGH at boot. Wire Red LED **Active LOW** (Anode to 3.3V via 330Ω, Cathode to D4). Pulls D4 HIGH during boot. |
-| **Piezo Buzzer** | `D5` | `GPIO14` | Digital Output | `VERIFIED SAFE` | **Relocated from D3 to D5**. GPIO0 (D3) was dangerous because low impedance pulls D3 LOW, forcing UART flash download mode. D5 has no strapping constraints. Driven via NPN transistor (2N2222) or 3.3V active buzzer. |
+| **Piezo Buzzer** | `N/A` | `NONE` | Actuator | `NOT IN USE` | Deactivated in prototype to avoid pin conflict with SOS on D5/GPIO14. |
 | **MQ-2 Gas Sensor** | `A0` | `ADC0` | Analog Input | `PENDING DIVIDER VERIFICATION` | **Voltage Limit Warning**: Bare ESP8266 ADC is 0-1.0V; NodeMCU onboard divider provides 0-3.3V. MQ-2 outputs up to 5.0V. An external voltage divider (e.g. 10kΩ / 18kΩ) is mandatory before connecting to A0. |
 | **Unused / Reserved** | `D3` | `GPIO0` | Strapping Pin | `RESERVED / FLOATING` | Must remain HIGH at boot for SPI flash boot. Left unconnected. |
 | **Unused / Reserved** | `D8` | `GPIO15` | Strapping Pin | `RESERVED / GROUNDED` | Must remain LOW at boot (onboard 12kΩ pulldown). Left unconnected. |
@@ -41,6 +41,17 @@ The ESP8266 ESP-12E has strict hardware boot-strapping constraints on GPIO0, GPI
                           GND
   ```
 - **Measurement Units**: The gas reading is strictly an uncalibrated **raw analog ADC reading (0–1023 counts)**, **NOT ppm** and **NOT calibrated methane concentration**.
+
+### B. Sensor Health & Validity Reporting (Phase 2)
+- **DHT22 & MPU6050 Integrity**: The firmware tracks DHT22 temperature and humidity validity separately, alongside MPU6050 I2C bus communication integrity. Explicit booleans (`dhtValid`, `mpuValid`, `tempValid`, `humidityValid`) are transmitted in every telemetry packet.
+- **Zero Fallback Concealment**: Hardcoded fallback values (e.g., 24.5°C, 50% humidity, 9.81 m/s²) are NEVER silently presented as valid physical samples when communication fails.
+- **Fault Fail-Safe State**: Sensor failure shifts the firmware state machine to `STATUS_SENSOR_FAULT`, extinguishing the green nominal LED and lighting the hazard indicator. Critical SOS button operation is strictly preserved during sensor failure.
+
+### C. Limitations of Detecting MQ-2 Disconnection from Analog Voltage Alone
+- **Single-Ended Analog Measurement**: The MQ-2 provides an analog voltage between 0V and ~3.3V (0–1023 ADC counts) via an external divider into ESP8266 pin A0.
+- **Ambiguity Between Clean Air and Disconnection**: In clean subterranean air, a properly powered and pre-heated MQ-2 sensor outputs a low baseline voltage (typically 150–250 ADC counts). If the sensor is physically disconnected, unpowered, or the signal wire breaks, the analog input reads near 0 counts or floats unpredictably at high impedance.
+- **Physical Infeasibility of Passive Detection**: From a single-ended passive analog voltage reading alone, it is physically impossible to reliably differentiate between clean ambient air and a disconnected sensor pin or cold heater coil without dedicated supervisory hardware circuitry (such as heater current loop monitoring or active bias resistor fault networks).
+- **Firmware Contract**: The firmware transmits the raw ADC reading faithfully as an integer count (0–1023) without inventing gas concentrations or claiming that a low reading proves the sensor is connected.
 
 ---
 

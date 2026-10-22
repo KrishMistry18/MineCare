@@ -3,6 +3,7 @@
  */
 
 import type { SafetyStatus } from '../types/safety';
+export type { SafetyStatus };
 import type { AlertSeverity, AlertCategory } from '../types/alert';
 
 export type ConnectivityState = 'ONLINE' | 'STALE' | 'OFFLINE';
@@ -145,6 +146,8 @@ export interface DbTelemetry {
   gyro_z: number;
   fall_detected: boolean;
   sos_pressed: boolean;
+  dht_valid?: boolean;
+  mpu_valid?: boolean;
   safety_status: SafetyStatus;
   created_at: string;
 }
@@ -169,6 +172,11 @@ export interface DbAlert {
     total_acceleration: number;
     sos_pressed: boolean;
     fall_detected: boolean;
+    dht_valid?: boolean;
+    mpu_valid?: boolean;
+    dhtValid?: boolean;
+    mpuValid?: boolean;
+    sensorFault?: boolean;
   };
   created_at: string;
   updated_at: string;
@@ -196,6 +204,11 @@ export interface TelemetryIngestPayload {
     gyroY?: number;
     gyroZ?: number;
   };
+  sensorHealth?: {
+    dht22?: boolean;
+    mq2?: boolean;
+    mpu6050?: boolean;
+  };
   // Flat properties fallback
   temperature?: number;
   humidity?: number;
@@ -210,6 +223,10 @@ export interface TelemetryIngestPayload {
   gyroZ?: number;
   fallDetected?: boolean;
   sosPressed?: boolean;
+  dhtValid?: boolean;
+  mpuValid?: boolean;
+  tempValid?: boolean;
+  humidityValid?: boolean;
   batteryVolts?: number;
   rssi?: number;
 }
@@ -231,6 +248,10 @@ export interface ValidatedTelemetryPacket {
   gyroZ: number;
   fallDetected: boolean;
   sosPressed: boolean;
+  dhtValid?: boolean;
+  mpuValid?: boolean;
+  tempValid?: boolean;
+  humidityValid?: boolean;
   batteryVolts: number;
   rssi: number;
 }

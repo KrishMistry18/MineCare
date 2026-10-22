@@ -39,6 +39,7 @@ export class AlertEngine {
     else if (evaluation.primaryTrigger === 'FALL_IMPACT_DETECTED') category = 'WORKER_FALL';
     else if (evaluation.primaryTrigger === 'MULTIPLE_HAZARDS') category = 'MULTI_HAZARD';
     else if (evaluation.primaryTrigger === 'HIGH_TEMPERATURE') category = 'HEAT_STRESS';
+    else if (evaluation.primaryTrigger === 'SENSOR_FAULT') category = 'SENSOR_FAULT';
 
     const severity: AlertSeverity = evaluation.status === 'DANGER' ? 'CRITICAL' : 'WARNING';
 
@@ -57,6 +58,8 @@ export class AlertEngine {
         total_acceleration: telemetry.totalAcceleration,
         sos_pressed: telemetry.sosPressed,
         fall_detected: telemetry.fallDetected,
+        dht_valid: telemetry.dhtValid,
+        mpu_valid: telemetry.mpuValid,
       };
       existingActiveAlert.updated_at = now;
       return { createdAlert: null, resolvedAlerts: [] };
@@ -83,6 +86,11 @@ export class AlertEngine {
         total_acceleration: telemetry.totalAcceleration,
         sos_pressed: telemetry.sosPressed,
         fall_detected: telemetry.fallDetected,
+        dht_valid: telemetry.dhtValid,
+        mpu_valid: telemetry.mpuValid,
+        dhtValid: telemetry.dhtValid,
+        mpuValid: telemetry.mpuValid,
+        sensorFault: telemetry.dhtValid === false || telemetry.mpuValid === false,
       },
       created_at: now,
       updated_at: now,

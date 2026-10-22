@@ -6,9 +6,9 @@
  *
  * CRITICAL ELECTRICAL & BOOTSTRAPPING DESIGN NOTES:
  * 1. GPIO0 (D3): FLASH STRAPPING PIN. Must be HIGH at boot.
- *    - In early proposals, a buzzer was assigned to D3. If pulled LOW during power-on,
- *      the ESP8266 enters UART flash download mode!
- *    - REVISED: Piezo Buzzer is MOVED to GPIO14 (D5). D3 is left UNCONNECTED.
+ *    - D3 is left UNCONNECTED to prevent entering UART flash mode.
+ *    - Buzzer is NOT IN USE in current prototype and has no GPIO assigned.
+ *    - GPIO14 (D5) is assigned to the physical SOS Push Button (INPUT_PULLUP, Active LOW).
  * 2. GPIO2 (D4): BOOT STRAPPING PIN. Must be HIGH at boot.
  *    - Connected to ESP-12E onboard blue LED.
  *    - Hazard Red LED is wired ACTIVE-LOW (Anode to 3.3V via 330Ω, Cathode to D4).
@@ -40,10 +40,9 @@
 // GPIO PIN ASSIGNMENTS (NodeMCU ESP-12E)
 // =============================================================================
 #define PIN_LED_GREEN        16  // D0 (GPIO16) - Nominal status indicator (Active HIGH)
-#define PIN_BUTTON_SOS        5  // D1 (GPIO5)  - Momentary emergency button (INPUT_PULLUP, Active LOW)
 #define PIN_DHT22             4  // D2 (GPIO4)  - DHT22 Single-bus temperature/humidity data
 #define PIN_LED_RED           2  // D4 (GPIO2)  - Hazard indicator (Active LOW, pulled HIGH at boot)
-#define PIN_BUZZER           14  // D5 (GPIO14) - Piezo alarm buzzer (Safe from bootloader lockup)
+#define PIN_BUTTON_SOS       14  // D5 (GPIO14) - Physical SOS push button (INPUT_PULLUP, Active LOW)
 #define PIN_I2C_SDA          12  // D6 (GPIO12) - MPU6050 I2C Data line
 #define PIN_I2C_SCL          13  // D7 (GPIO13) - MPU6050 I2C Clock line
 #define PIN_MQ2_ANALOG       A0  // A0 (ADC0)   - MQ-2 Analog output (0-1023 raw ADC via divider)
@@ -83,7 +82,8 @@
 #define LED_RED_ON()      digitalWrite(PIN_LED_RED, LOW)
 #define LED_RED_OFF()     digitalWrite(PIN_LED_RED, HIGH)
 
-#define BUZZER_ON()       digitalWrite(PIN_BUZZER, HIGH)
-#define BUZZER_OFF()      digitalWrite(PIN_BUZZER, LOW)
+// Buzzer is deactivated / not in use (no pin allocated to prevent hardware conflict on D5)
+#define BUZZER_ON()       do {} while (0)
+#define BUZZER_OFF()      do {} while (0)
 
 #endif // MINECARE_CONFIG_H

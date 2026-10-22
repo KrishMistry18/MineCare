@@ -16,7 +16,7 @@
 import type { ITelemetryProvider } from './ITelemetryProvider';
 import { MockTelemetryProvider } from './MockTelemetryProvider';
 import type { HelmetTelemetryPacket, TelemetryHistoryPoint, ScenarioType } from '../../types/telemetry';
-import type { SafetyEvaluationResult } from '../../types/safety';
+import type { SafetyEvaluationResult, SafetyStatus } from '../../types/safety';
 import type { HelmetDevice, ConnectivityStatus } from '../../types/helmet';
 import type { SafetyAlert } from '../../types/alert';
 import { ZoneAssignmentProvider } from '../zones/ZoneAssignmentProvider';
@@ -203,12 +203,25 @@ export class TelemetryService {
     const isFall = Boolean(row.fall_detected ?? row.fallDetected ?? false);
     const totalAccel = Number(row.total_acceleration ?? row.mpu6050?.totalAcceleration ?? 9.81);
 
-    const derivedStatus = (isSos || isFall || totalAccel > 15)
+    const dhtValid = Boolean(
+      row.dht_valid ?? row.dhtValid ?? row.sensorHealth?.dht22 ?? (row.tempValid !== false && row.humidityValid !== false && true)
+    );
+    const mpuValid = Boolean(
+      row.mpu_valid ?? row.mpuValid ?? row.sensorHealth?.mpu6050 ?? true
+    );
+    const isSensorFault = !dhtValid || !mpuValid;
+
+    const derivedStatus: SafetyStatus = (isSos || (mpuValid && (isFall || totalAccel > 15)))
       ? 'DANGER'
-      : (gasVal > 800 || tempVal > 40)
+      : (gasVal > 800 || (dhtValid && tempVal > 40))
       ? 'WARNING'
+      : isSensorFault
+      ? 'SENSOR_FAULT'
       : 'SAFE';
-    const safetyStatus = (row.safety_status || row.safetyStatus || row.status || derivedStatus) as any;
+    let safetyStatus = (row.safety_status || row.safetyStatus || row.status || derivedStatus) as SafetyStatus;
+    if (isSensorFault && safetyStatus === 'SAFE') {
+      safetyStatus = 'SENSOR_FAULT';
+    }
 
     const packet: HelmetTelemetryPacket = {
       packetId: row.id || row.packetId || `PKT-${helmetId}-${Date.now()}`,
@@ -228,10 +241,14 @@ export class TelemetryService {
       },
       sosPressed: isSos,
       fallDetected: isFall,
-      sensorHealth: { dht22: true, mq2: true, mpu6050: true },
+      sensorHealth: {
+        dht22: dhtValid,
+        mq2: true, // Note: MQ-2 is single-ended analog; see documentation
+        mpu6050: mpuValid,
+      },
       outputs: {
         greenLed: safetyStatus === 'SAFE',
-        redLed: safetyStatus === 'DANGER',
+        redLed: safetyStatus !== 'SAFE',
         buzzer: safetyStatus === 'DANGER',
       },
       rssi: -65,
@@ -248,14 +265,19 @@ export class TelemetryService {
       (a) => a.severity === 'CRITICAL' || a.safetyStatus === 'DANGER'
     );
     const hasActiveWarning = activeAlertsForHelmet.some(
-      (a) => a.severity === 'WARNING' || a.safetyStatus === 'WARNING'
+      (a) => (a.severity === 'WARNING' || a.safetyStatus === 'WARNING') && a.category !== 'SENSOR_FAULT'
+    );
+    const hasActiveSensorFault = activeAlertsForHelmet.some(
+      (a) => a.category === 'SENSOR_FAULT' || a.safetyStatus === 'SENSOR_FAULT'
     );
 
-    const effectiveStatus =
+    const effectiveStatus: SafetyStatus =
       safetyStatus === 'DANGER' || hasActiveCritical
         ? 'DANGER'
         : safetyStatus === 'WARNING' || hasActiveWarning
         ? 'WARNING'
+        : safetyStatus === 'SENSOR_FAULT' || isSensorFault || hasActiveSensorFault
+        ? 'SENSOR_FAULT'
         : 'SAFE';
 
     // Update authoritative safety state
@@ -266,17 +288,24 @@ export class TelemetryService {
           ? 'NOMINAL'
           : isSos || hasActiveCritical
           ? 'SOS_BUTTON_TRIGGERED'
-          : isFall || totalAccel > 15
+          : (mpuValid && (isFall || totalAccel > 15))
           ? 'FALL_IMPACT_DETECTED'
-          : gasVal > 800 && tempVal > 40
+          : gasVal > 800 && (dhtValid && tempVal > 40)
           ? 'MULTIPLE_HAZARDS'
           : gasVal > 800
           ? 'HIGH_RAW_GAS_LEVEL'
-          : 'HIGH_TEMPERATURE',
-      triggerDetails: [],
+          : (dhtValid && tempVal > 40)
+          ? 'HIGH_TEMPERATURE'
+          : 'SENSOR_FAULT',
+      triggerDetails: isSensorFault
+        ? [
+            ...(!dhtValid ? ['DHT22 Temperature/Humidity Sensor Offline'] : []),
+            ...(!mpuValid ? ['MPU6050 Accelerometer/Gyroscope I2C Fault'] : []),
+          ]
+        : [],
       outputs: {
         greenLed: effectiveStatus === 'SAFE',
-        redLed: effectiveStatus === 'DANGER',
+        redLed: effectiveStatus !== 'SAFE',
         buzzer: effectiveStatus === 'DANGER',
       },
       isPrototypeNotice: true,

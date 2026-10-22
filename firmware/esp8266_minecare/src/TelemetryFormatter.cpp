@@ -24,6 +24,10 @@ int TelemetryFormatter::formatJson(const TelemetryPacket& packet, char* buffer, 
         "\"gyroZ\":%.2f,"
         "\"fallDetected\":%s,"
         "\"sosPressed\":%s,"
+        "\"dhtValid\":%s,"
+        "\"mpuValid\":%s,"
+        "\"tempValid\":%s,"
+        "\"humidityValid\":%s,"
         "\"batteryVolts\":%.2f,"
         "\"rssi\":%d}",
         packet.packetId,
@@ -42,6 +46,10 @@ int TelemetryFormatter::formatJson(const TelemetryPacket& packet, char* buffer, 
         packet.readings.gyroZ,
         packet.readings.fallDetected ? "true" : "false",
         packet.readings.sosPressed ? "true" : "false",
+        packet.readings.dhtValid ? "true" : "false",
+        packet.readings.mpuValid ? "true" : "false",
+        packet.readings.tempValid ? "true" : "false",
+        packet.readings.humidityValid ? "true" : "false",
         packet.batteryVolts,
         packet.rssi
     );

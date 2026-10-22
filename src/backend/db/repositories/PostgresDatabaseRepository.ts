@@ -457,6 +457,8 @@ export class PostgresTelemetryRepository implements ITelemetryRepository {
     const gyro_z = Number(raw.gyro_z ?? raw.gyroZ ?? 0);
     const fall_detected = Boolean(raw.fall_detected ?? raw.fallDetected ?? raw.fall ?? false);
     const sos_pressed = Boolean(raw.sos_pressed ?? raw.sosPressed ?? raw.sos ?? false);
+    const dht_valid = Boolean(raw.dht_valid ?? raw.dhtValid ?? true);
+    const mpu_valid = Boolean(raw.mpu_valid ?? raw.mpuValid ?? true);
     const safety_status = raw.safety_status || raw.safetyStatus || 'SAFE';
     const created_at = raw.created_at || timestamp;
 
@@ -466,11 +468,11 @@ export class PostgresTelemetryRepository implements ITelemetryRepository {
         `INSERT INTO telemetry (
            id, helmet_id, worker_id, timestamp, sequence_number, temperature, humidity, gas_value,
            acceleration_x, acceleration_y, acceleration_z, total_acceleration, gyro_x, gyro_y, gyro_z,
-           fall_detected, sos_pressed, safety_status, created_at
+           fall_detected, sos_pressed, dht_valid, mpu_valid, safety_status, created_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8,
            $9, $10, $11, $12, $13, $14, $15,
-           $16, $17, $18, COALESCE($19, NOW())
+           $16, $17, $18, $19, $20, COALESCE($21, NOW())
          )`,
         [
           id,
@@ -490,6 +492,8 @@ export class PostgresTelemetryRepository implements ITelemetryRepository {
           gyro_z,
           fall_detected,
           sos_pressed,
+          dht_valid,
+          mpu_valid,
           safety_status,
           created_at,
         ]
@@ -573,6 +577,8 @@ export class PostgresTelemetryRepository implements ITelemetryRepository {
       sequence_number: Number(row.sequence_number),
       fall_detected: Boolean(row.fall_detected),
       sos_pressed: Boolean(row.sos_pressed),
+      dht_valid: Boolean(row.dht_valid ?? true),
+      mpu_valid: Boolean(row.mpu_valid ?? true),
     };
   }
 }

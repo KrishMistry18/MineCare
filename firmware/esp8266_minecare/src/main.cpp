@@ -98,28 +98,24 @@ void setup() {
     Serial.println("==================================================");
     Serial.printf("[INIT] Helmet ID: %s\n", MINECARE_HELMET_ID);
     Serial.printf("[INIT] Backend:   %s\n", MINECARE_BACKEND_URL);
-    Serial.printf("[INIT] Pinout: Green=D0(16), SOS=D1(5), DHT=D2(4), Red=D4(2), Buzz=D5(14)\n");
+    Serial.printf("[INIT] Pinout: Green=D0(16), DHT=D2(4), Red=D4(2), SOS=D5(14)[PULLUP], I2C=D6/D7(12/13), MQ2=A0; Buzzer: NOT USED\n");
     Serial.println("[SECURITY] Credentials loaded from secure storage (redacted)");
 
-    // Configure GPIOs
+    // Configure GPIOs (Buzzer is deactivated/not used; D5 is reserved strictly for SOS INPUT_PULLUP)
     pinMode(PIN_LED_GREEN, OUTPUT);
     pinMode(PIN_LED_RED, OUTPUT);
-    pinMode(PIN_BUZZER, OUTPUT);
 
     // Initial safe states
     LED_GREEN_OFF();
     LED_RED_OFF();
-    BUZZER_OFF();
 
-    // Visual & acoustic self-test diagnostic (150ms)
+    // Visual self-test diagnostic (150ms)
     LED_GREEN_ON();
     delay(100);
     LED_GREEN_OFF();
     LED_RED_ON();
-    BUZZER_ON();
     delay(100);
     LED_RED_OFF();
-    BUZZER_OFF();
 
     // Initialize subsystems
     Serial.println("[INIT] Initializing hardware sensors...");
@@ -204,9 +200,10 @@ void loop() {
                     currentSafety.outputs = res.serverActuators;
                 }
 
-                // Clear latched fall impact upon successful transmission
+                // Clear latched fall impact and latched SOS emergency upon successful backend acceptance (HTTP 201)
                 if (res.success) {
                     sensorMgr.clearFallLatch();
+                    sensorMgr.clearSosLatch();
                 }
             }
         }

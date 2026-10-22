@@ -38,7 +38,9 @@ struct SensorReadings {
     float gyroZ;               // Z-axis angular velocity (deg/s)
     bool sosPressed;           // Momentary emergency button state
     bool fallDetected;         // Instantaneous or latched fall impact
-    bool dhtValid;             // DHT22 communication integrity
+    bool dhtValid;             // DHT22 composite communication integrity (tempValid && humidityValid)
+    bool tempValid;            // Explicit DHT22 temperature reading integrity
+    bool humidityValid;        // Explicit DHT22 humidity reading integrity
     bool mpuValid;             // MPU6050 communication integrity
 };
 

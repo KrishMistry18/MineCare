@@ -32,7 +32,7 @@ export const HelmetsPage: React.FC<HelmetsPageProps> = ({
 
   const [viewMode, setViewMode] = useState<'GRID' | 'MAP'>(initialZone ? 'MAP' : initialView);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'DANGER' | 'WARNING' | 'SAFE' | 'OFFLINE'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'DANGER' | 'WARNING' | 'SENSOR_FAULT' | 'SAFE' | 'OFFLINE'>('ALL');
 
   useEffect(() => {
     if (initialZone) {
@@ -119,8 +119,8 @@ export const HelmetsPage: React.FC<HelmetsPageProps> = ({
           <div className="px-2 text-slate-500 flex items-center">
             <Filter className="w-3 h-3" />
           </div>
-          {(['ALL', 'DANGER', 'WARNING', 'SAFE', 'OFFLINE'] as const).map(filter => {
-            const label = filter === 'ALL' ? 'All' : filter.charAt(0) + filter.slice(1).toLowerCase();
+          {(['ALL', 'DANGER', 'WARNING', 'SENSOR_FAULT', 'SAFE', 'OFFLINE'] as const).map(filter => {
+            const label = filter === 'ALL' ? 'All' : filter === 'SENSOR_FAULT' ? 'Fault' : filter.charAt(0) + filter.slice(1).toLowerCase();
             const isActive = statusFilter === filter;
 
             return (

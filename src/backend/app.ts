@@ -27,7 +27,7 @@ import { AuthManager } from './auth/AuthManager';
 import { RealtimePublisher } from './realtime/RealtimePublisher';
 import { SimulationEngine } from './simulation/SimulationEngine';
 import { AnalyticsEngine, type AnalyticsOverviewResult } from './analytics/AnalyticsEngine';
-import type { DbTelemetry, UserRole, DbUserProfile } from './types';
+import type { DbTelemetry, UserRole, DbUserProfile, SafetyStatus } from './types';
 import { getBackendConfig } from './config/env';
 import { StructuredLogger } from './security/StructuredLogger';
 import { RequestIdManager } from './security/RequestId';
@@ -549,6 +549,8 @@ export class BackendApp {
           gasValue: packet.gasValue,
           totalAcceleration: packet.totalAcceleration,
           sosPressed: packet.sosPressed,
+          dhtValid: packet.dhtValid,
+          mpuValid: packet.mpuValid,
         });
 
         // Persist Telemetry Record
@@ -569,6 +571,8 @@ export class BackendApp {
           gyro_z: packet.gyroZ,
           fall_detected: packet.fallDetected,
           sos_pressed: packet.sosPressed,
+          dht_valid: packet.dhtValid,
+          mpu_valid: packet.mpuValid,
           safety_status: safety.status,
           created_at: new Date().toISOString(),
         };
@@ -605,12 +609,15 @@ export class BackendApp {
         );
         const hasCritical = activeHelmetAlerts.some((a) => a.severity === 'CRITICAL');
         const hasWarning = activeHelmetAlerts.some((a) => a.severity === 'WARNING');
+        const hasSensorFault = activeHelmetAlerts.some((a) => a.type === 'SENSOR_FAULT');
 
-        const effectiveHelmetStatus =
+        const effectiveHelmetStatus: SafetyStatus =
           safety.status === 'DANGER' || hasCritical
             ? 'DANGER'
             : safety.status === 'WARNING' || hasWarning
             ? 'WARNING'
+            : safety.status === 'SENSOR_FAULT' || hasSensorFault
+            ? 'SENSOR_FAULT'
             : 'SAFE';
 
         await this.db.saveTelemetry(telemetryRecord);

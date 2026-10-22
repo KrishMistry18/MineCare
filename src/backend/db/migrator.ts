@@ -111,7 +111,9 @@ export class DatabaseMigrator {
           // Remove DROP POLICY ... ;
           .replace(/DROP\s+POLICY\s+IF\s+EXISTS\s+"[^"]+"\s+ON\s+[^;]+;/gis, '-- skipped drop policy for pg-mem')
           // Remove DO $$ ... $$; blocks unsupported by pg-mem
-          .replace(/DO\s+\$\$[\s\S]*?\$\$;/gis, '-- skipped do block for pg-mem');
+          .replace(/DO\s+\$\$[\s\S]*?\$\$;/gis, '-- skipped do block for pg-mem')
+          // Remove DROP/ADD CONSTRAINT unsupported by pg-mem
+          .replace(/ALTER\s+TABLE\s+[^;]+(?:DROP|ADD)\s+CONSTRAINT[^;]+;/gis, '-- skipped constraint alter for pg-mem');
       } else {
         sanitizedSql = sanitizedSql
           .split('\n')

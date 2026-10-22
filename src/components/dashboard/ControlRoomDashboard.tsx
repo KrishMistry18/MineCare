@@ -42,13 +42,14 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
   // Active alerts that are unresolved
   const activeAlertsList = alerts.filter(a => !a.resolved);
 
-  // Sort helmets by severity: DANGER (1), WARNING (2), OFFLINE (3), SAFE (4)
+  // Sort helmets by severity: DANGER (0), WARNING (1), SENSOR_FAULT (2), OFFLINE (3), SAFE (4)
   const sortedHelmets = [...helmets].sort((a, b) => {
     const getScore = (h: typeof a) => {
       if (h.safety.status === 'DANGER') return 0;
       if (h.safety.status === 'WARNING') return 1;
-      if (h.connectivity === 'OFFLINE') return 2;
-      return 3;
+      if (h.safety.status === 'SENSOR_FAULT') return 2;
+      if (h.connectivity === 'OFFLINE') return 3;
+      return 4;
     };
     return getScore(a) - getScore(b);
   });

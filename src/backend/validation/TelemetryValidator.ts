@@ -47,23 +47,81 @@ export class TelemetryValidator {
       }
     }
 
-    // 3. Temperature validation
+    // 3. Sensor Health Flags (Strict boolean validation)
+    let dhtValid = true;
+    let mpuValid = true;
+    let tempValid = true;
+    let humidityValid = true;
+
+    if (data.dhtValid !== undefined) {
+      if (typeof data.dhtValid !== 'boolean') {
+        errors.push('dhtValid must be a boolean');
+      } else {
+        dhtValid = data.dhtValid;
+      }
+    } else if (data.sensorHealth?.dht22 !== undefined) {
+      if (typeof data.sensorHealth.dht22 !== 'boolean') {
+        errors.push('sensorHealth.dht22 must be a boolean');
+      } else {
+        dhtValid = data.sensorHealth.dht22;
+      }
+    }
+
+    if (data.tempValid !== undefined) {
+      if (typeof data.tempValid !== 'boolean') {
+        errors.push('tempValid must be a boolean');
+      } else {
+        tempValid = data.tempValid;
+      }
+    } else {
+      tempValid = dhtValid;
+    }
+
+    if (data.humidityValid !== undefined) {
+      if (typeof data.humidityValid !== 'boolean') {
+        errors.push('humidityValid must be a boolean');
+      } else {
+        humidityValid = data.humidityValid;
+      }
+    } else {
+      humidityValid = dhtValid;
+    }
+
+    if (!tempValid || !humidityValid) {
+      dhtValid = false;
+    }
+
+    if (data.mpuValid !== undefined) {
+      if (typeof data.mpuValid !== 'boolean') {
+        errors.push('mpuValid must be a boolean');
+      } else {
+        mpuValid = data.mpuValid;
+      }
+    } else if (data.sensorHealth?.mpu6050 !== undefined) {
+      if (typeof data.sensorHealth.mpu6050 !== 'boolean') {
+        errors.push('sensorHealth.mpu6050 must be a boolean');
+      } else {
+        mpuValid = data.sensorHealth.mpu6050;
+      }
+    }
+
+    // 4. Temperature validation
     const tempRaw = data.dht22?.temperature ?? data.temperature;
     if (tempRaw === undefined || typeof tempRaw !== 'number' || isNaN(tempRaw) || !isFinite(tempRaw)) {
       errors.push('temperature must be a finite number');
-    } else if (tempRaw < -50 || tempRaw > 120) {
+    } else if (tempValid && (tempRaw < -50 || tempRaw > 120)) {
       errors.push(`temperature value (${tempRaw}) is outside plausible physical range [-50, 120] °C`);
     }
 
-    // 4. Humidity validation
+    // 5. Humidity validation
     const humidityRaw = data.dht22?.humidity ?? data.humidity;
     if (humidityRaw === undefined || typeof humidityRaw !== 'number' || isNaN(humidityRaw) || !isFinite(humidityRaw)) {
       errors.push('humidity must be a finite number');
-    } else if (humidityRaw < 0 || humidityRaw > 100) {
+    } else if (humidityValid && (humidityRaw < 0 || humidityRaw > 100)) {
       errors.push(`humidity (${humidityRaw}) must be between 0% and 100%`);
     }
 
-    // 5. Gas Value validation (MQ-2 Raw ADC 0-1023)
+    // 6. Gas Value validation (MQ-2 Raw ADC 0-1023)
     const gasRaw = data.mq2?.rawGasValue ?? data.gasValue ?? data.rawGasValue;
     if (gasRaw === undefined || typeof gasRaw !== 'number' || isNaN(gasRaw) || !isFinite(gasRaw)) {
       errors.push('gas_value must be a finite number');
@@ -71,7 +129,7 @@ export class TelemetryValidator {
       errors.push(`gas_value (${gasRaw}) must be an analog ADC reading between 0 and 1023`);
     }
 
-    // 6. Acceleration validation
+    // 7. Acceleration validation
     const accelX = data.mpu6050?.accelX ?? data.accelX ?? 0;
     const accelY = data.mpu6050?.accelY ?? data.accelY ?? 0;
     const accelZ = data.mpu6050?.accelZ ?? data.accelZ ?? 9.81;
@@ -87,7 +145,7 @@ export class TelemetryValidator {
       totalAcceleration = Math.sqrt(accelX * accelX + accelY * accelY + accelZ * accelZ);
     }
 
-    // 7. Gyroscope validation
+    // 8. Gyroscope validation
     const gyroX = data.mpu6050?.gyroX ?? data.gyroX ?? 0;
     const gyroY = data.mpu6050?.gyroY ?? data.gyroY ?? 0;
     const gyroZ = data.mpu6050?.gyroZ ?? data.gyroZ ?? 0;
@@ -98,7 +156,7 @@ export class TelemetryValidator {
       errors.push('gyroX, gyroY, gyroZ must be finite numbers');
     }
 
-    // 8. Event booleans
+    // 9. Event booleans
     const fallDetected = Boolean(data.fallDetected ?? (totalAcceleration > 15.0));
     const sosPressed = Boolean(data.sosPressed);
 
@@ -123,6 +181,10 @@ export class TelemetryValidator {
       gyroZ: Number(gyroZ.toFixed(2)),
       fallDetected,
       sosPressed,
+      dhtValid,
+      mpuValid,
+      tempValid,
+      humidityValid,
       batteryVolts: Number((data.batteryVolts ?? 4.1).toFixed(2)),
       rssi: Number((data.rssi ?? -65).toFixed(0)),
     };

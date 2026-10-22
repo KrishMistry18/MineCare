@@ -26,7 +26,11 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
 
   const isDanger = safety.status === 'DANGER';
   const isWarning = safety.status === 'WARNING';
+  const isSensorFault = safety.status === 'SENSOR_FAULT';
   const isOffline = connectivity === 'OFFLINE';
+
+  const dhtHealthy = telemetry.sensorHealth ? telemetry.sensorHealth.dht22 : true;
+  const mpuHealthy = telemetry.sensorHealth ? telemetry.sensorHealth.mpu6050 : true;
 
   const batteryPercent = worker ? `${worker.battery}%` : '70%';
 
@@ -36,7 +40,7 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
       className={`bg-[#0c131f] border rounded-xl p-4 space-y-3.5 transition-all duration-150 cursor-pointer ${
         isDanger
           ? 'border-red-500/70 bg-red-950/10 shadow-[0_0_15px_rgba(239,68,68,0.1)]'
-          : isWarning
+          : isWarning || isSensorFault
           ? 'border-amber-500/60 bg-amber-950/10'
           : 'border-[#182335] hover:border-[#283850]'
       }`}
@@ -68,6 +72,11 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
               <span>•</span>
               <span>WARNING</span>
             </span>
+          ) : isSensorFault ? (
+            <span className="bg-[#291b07] border border-[#d97706] text-[#fbbf24] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
+              <span>•</span>
+              <span>SENSOR FAULT</span>
+            </span>
           ) : (
             <span className="bg-[#0b241b] border border-[#164e3b] text-[#34d399] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
               <span>•</span>
@@ -85,8 +94,8 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
             <Thermometer className="w-3 h-3 text-slate-400" />
             <span>TEMP</span>
           </div>
-          <div className={`text-base font-bold font-mono mt-0.5 ${telemetry.dht22.temperature > 40 ? 'text-amber-400' : 'text-slate-100'}`}>
-            {telemetry.dht22.temperature > -100 ? `${telemetry.dht22.temperature.toFixed(1)} °C` : 'N/A'}
+          <div className={`text-base font-bold font-mono mt-0.5 ${!dhtHealthy ? 'text-amber-500 font-semibold' : telemetry.dht22.temperature > 40 ? 'text-amber-400' : 'text-slate-100'}`}>
+            {!dhtHealthy ? 'FAULT' : telemetry.dht22.temperature > -100 ? `${telemetry.dht22.temperature.toFixed(1)} °C` : 'N/A'}
           </div>
         </div>
 
@@ -96,8 +105,8 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
             <Droplets className="w-3 h-3 text-slate-400" />
             <span>HUMIDITY</span>
           </div>
-          <div className="text-base font-bold font-mono text-slate-100 mt-0.5">
-            {telemetry.dht22.humidity > -100 ? `${Math.round(telemetry.dht22.humidity)} %` : 'N/A'}
+          <div className={`text-base font-bold font-mono mt-0.5 ${!dhtHealthy ? 'text-amber-500 font-semibold' : 'text-slate-100'}`}>
+            {!dhtHealthy ? 'FAULT' : telemetry.dht22.humidity > -100 ? `${Math.round(telemetry.dht22.humidity)} %` : 'N/A'}
           </div>
         </div>
 
@@ -118,8 +127,8 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
             <Activity className="w-3 h-3 text-slate-400" />
             <span>ACCEL</span>
           </div>
-          <div className={`text-base font-bold font-mono mt-0.5 ${telemetry.mpu6050.totalAcceleration > 15 ? 'text-red-400 font-extrabold' : 'text-slate-100'}`}>
-            {telemetry.mpu6050.totalAcceleration.toFixed(1)} m/s²
+          <div className={`text-base font-bold font-mono mt-0.5 ${!mpuHealthy ? 'text-amber-500 font-semibold' : telemetry.mpu6050.totalAcceleration > 15 ? 'text-red-400 font-extrabold' : 'text-slate-100'}`}>
+            {!mpuHealthy ? 'FAULT' : `${telemetry.mpu6050.totalAcceleration.toFixed(1)} m/s²`}
           </div>
         </div>
       </div>

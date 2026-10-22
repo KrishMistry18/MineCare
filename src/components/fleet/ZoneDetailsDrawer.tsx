@@ -170,6 +170,7 @@ export const ZoneDetailsDrawer: React.FC<ZoneDetailsDrawerProps> = ({
                   const status = getHelmetStatus(worker.assignedHelmetId);
                   const isDanger = status === 'DANGER';
                   const isWarning = status === 'WARNING';
+                  const isSensorFault = status === 'SENSOR_FAULT';
                   const isOffline = status === 'OFFLINE';
                   const isReassigning = reassigningHelmetId === worker.assignedHelmetId;
 
@@ -179,7 +180,7 @@ export const ZoneDetailsDrawer: React.FC<ZoneDetailsDrawerProps> = ({
                       className={`bg-[#0c1422] border rounded-xl p-3 transition-colors ${
                         isDanger
                           ? 'border-red-500/80 bg-red-950/20'
-                          : isWarning
+                          : isWarning || isSensorFault
                           ? 'border-amber-500/60 bg-amber-950/15'
                           : 'border-[#182335] hover:border-[#23354f]'
                       }`}
@@ -221,6 +222,11 @@ export const ZoneDetailsDrawer: React.FC<ZoneDetailsDrawerProps> = ({
                             <span className="bg-[#291b07] border border-[#78350f] text-[#fbbf24] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
                               <span>•</span>
                               <span>WARNING</span>
+                            </span>
+                          ) : isSensorFault ? (
+                            <span className="bg-[#291b07] border border-[#d97706] text-[#fbbf24] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
+                              <span>•</span>
+                              <span>FAULT</span>
                             </span>
                           ) : (
                             <span className="bg-[#0b241b] border border-[#164e3b] text-[#34d399] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">

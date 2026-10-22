@@ -42,14 +42,21 @@ export class SafetyEngine {
     gasValue: number;
     totalAcceleration: number;
     sosPressed: boolean;
+    dhtValid?: boolean;
+    mpuValid?: boolean;
   }): SafetyEvaluation {
     const details: string[] = [];
+    const dhtValid = packet.dhtValid ?? true;
+    const mpuValid = packet.mpuValid ?? true;
+    const isSensorFault = !dhtValid || !mpuValid;
 
     // Evaluate individual hazard conditions
-    const isFall = packet.totalAcceleration > PROTOTYPE_LIMITS.FALL_ACCELERATION;
+    // Fall impact is only trustworthy when MPU6050 is valid
+    const isFall = mpuValid && packet.totalAcceleration > PROTOTYPE_LIMITS.FALL_ACCELERATION;
     const isSos = Boolean(packet.sosPressed);
     const isHighGas = packet.gasValue > PROTOTYPE_LIMITS.HIGH_GAS_RAW;
-    const isHighTemp = packet.temperature > PROTOTYPE_LIMITS.HIGH_TEMPERATURE;
+    // High temperature is only trustworthy when DHT22 is valid
+    const isHighTemp = dhtValid && packet.temperature > PROTOTYPE_LIMITS.HIGH_TEMPERATURE;
 
     if (isSos) {
       details.push('SOS Push-Button Emergency Activated by Worker');
@@ -63,10 +70,17 @@ export class SafetyEngine {
     if (isHighTemp) {
       details.push(`Elevated Ambient Temperature (${packet.temperature.toFixed(1)}°C > ${PROTOTYPE_LIMITS.HIGH_TEMPERATURE}°C)`);
     }
+    if (!dhtValid) {
+      details.push('DHT22 Sensor Communication Fault / Disconnected');
+    }
+    if (!mpuValid) {
+      details.push('MPU6050 Accelerometer/Gyro I2C Bus Fault / Disconnected');
+    }
 
     const hazardCount = (isSos ? 1 : 0) + (isFall ? 1 : 0) + (isHighGas ? 1 : 0) + (isHighTemp ? 1 : 0);
 
     // 1. DANGER (Highest Priority: SOS or Fall)
+    // Critical SOS emergency button ALWAYS takes precedence even during sensor fault
     if (isSos || isFall) {
       let primaryTrigger: HazardTrigger = 'NOMINAL';
       if (hazardCount > 1) {
@@ -106,7 +120,19 @@ export class SafetyEngine {
       };
     }
 
-    // 3. SAFE (Nominal)
+    // 3. SENSOR FAULT FAIL-SAFE (Sensor disconnected or read failure)
+    // Critical sensors MUST NOT silently appear SAFE or report confirmed healthy baseline
+    if (isSensorFault) {
+      return {
+        status: 'SENSOR_FAULT',
+        primaryTrigger: 'SENSOR_FAULT',
+        triggerDetails: details,
+        isPrototypeNotice: true,
+        outputs: { greenLed: false, redLed: true, buzzer: false },
+      };
+    }
+
+    // 4. SAFE (Nominal - only when all critical sensors are verified valid and within limits)
     return {
       status: 'SAFE',
       primaryTrigger: 'NOMINAL',

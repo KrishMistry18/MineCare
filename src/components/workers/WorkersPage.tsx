@@ -164,6 +164,11 @@ export const WorkersPage: React.FC<WorkersPageProps> = ({ onInspectHelmet }) => 
                           <AlertTriangle className="w-2.5 h-2.5" />
                           <span>WARNING</span>
                         </span>
+                      ) : safetyStatus === 'SENSOR_FAULT' ? (
+                        <span className="bg-[#291b07] border border-[#d97706] text-[#fbbf24] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
+                          <AlertTriangle className="w-2.5 h-2.5" />
+                          <span>FAULT</span>
+                        </span>
                       ) : (
                         <span className="bg-[#0b241b] border border-[#164e3b] text-[#34d399] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
                           <ShieldCheck className="w-2.5 h-2.5" />

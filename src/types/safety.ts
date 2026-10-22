@@ -8,7 +8,7 @@
 
 import type { HardwareOutputs } from './telemetry';
 
-export type SafetyStatus = 'SAFE' | 'WARNING' | 'DANGER';
+export type SafetyStatus = 'SAFE' | 'WARNING' | 'DANGER' | 'SENSOR_FAULT';
 
 export type HazardTrigger = 
   | 'SOS_BUTTON_TRIGGERED'
@@ -16,6 +16,7 @@ export type HazardTrigger =
   | 'HIGH_RAW_GAS_LEVEL'
   | 'HIGH_TEMPERATURE'
   | 'MULTIPLE_HAZARDS'
+  | 'SENSOR_FAULT'
   | 'NOMINAL';
 
 export interface PrototypeThresholds {

@@ -129,8 +129,22 @@ export const AlertsPage: React.FC = () => {
                         <span>{new Date(alert.timestamp).toLocaleTimeString()}</span>
                       </span>
                       <span>Gas: <strong className="text-amber-400">{alert.readingsSnapshot.rawGasValue}</strong></span>
-                      <span>Accel: <strong className="text-red-400">{alert.readingsSnapshot.totalAcceleration.toFixed(1)} m/s²</strong></span>
-                      <span>Temp: {alert.readingsSnapshot.temperature.toFixed(1)} °C</span>
+                      <span>
+                        Accel:{' '}
+                        {alert.readingsSnapshot.mpuValid === false ? (
+                          <strong className="text-amber-400">FAULT</strong>
+                        ) : (
+                          <strong className="text-red-400">{alert.readingsSnapshot.totalAcceleration.toFixed(1)} m/s²</strong>
+                        )}
+                      </span>
+                      <span>
+                        Temp:{' '}
+                        {alert.readingsSnapshot.dhtValid === false ? (
+                          <strong className="text-amber-400">FAULT</strong>
+                        ) : (
+                          `${alert.readingsSnapshot.temperature.toFixed(1)} °C`
+                        )}
+                      </span>
                     </div>
                   </div>
                 </div>

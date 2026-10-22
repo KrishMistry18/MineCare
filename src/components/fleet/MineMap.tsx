@@ -29,7 +29,7 @@ interface MineMapProps {
   workers: WorkerProfile[];
   helmets: HelmetDevice[];
   searchQuery: string;
-  statusFilter: 'ALL' | 'DANGER' | 'WARNING' | 'SAFE' | 'OFFLINE';
+  statusFilter: 'ALL' | 'DANGER' | 'WARNING' | 'SENSOR_FAULT' | 'SAFE' | 'OFFLINE';
   selectedZoneName: string | null;
   onSelectZone: (zoneName: string | null) => void;
   onInspectHelmet: (helmetId: string) => void;
@@ -58,7 +58,7 @@ export const MineMap: React.FC<MineMapProps> = ({
     return helmets.find(h => h.helmetId === helmetId);
   };
 
-  const getWorkerStatus = (helmetId: string): 'SAFE' | 'WARNING' | 'DANGER' | 'OFFLINE' => {
+  const getWorkerStatus = (helmetId: string): 'SAFE' | 'WARNING' | 'DANGER' | 'SENSOR_FAULT' | 'OFFLINE' => {
     const helmet = getWorkerHelmet(helmetId);
     if (!helmet || helmet.connectivity === 'OFFLINE') return 'OFFLINE';
     return helmet.safety.status;
@@ -113,6 +113,10 @@ export const MineMap: React.FC<MineMapProps> = ({
           <div className="flex items-center space-x-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
             <span className="text-slate-300">WARNING</span>
+          </div>
+          <div className="flex items-center space-x-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-amber-400/40 inline-block" />
+            <span className="text-slate-300">FAULT</span>
           </div>
           <div className="flex items-center space-x-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-red-500 ring-2 ring-red-400/50 inline-block" />
@@ -274,6 +278,7 @@ export const MineMap: React.FC<MineMapProps> = ({
                           const status = getWorkerStatus(worker.assignedHelmetId);
                           const isDanger = status === 'DANGER';
                           const isWarning = status === 'WARNING';
+                          const isSensorFault = status === 'SENSOR_FAULT';
                           const isOffline = status === 'OFFLINE';
                           const matchesFilter = isWorkerMatchingFilter(worker.assignedHelmetId);
                           const matchesSearch = isWorkerMatchingSearch(worker);
@@ -292,6 +297,8 @@ export const MineMap: React.FC<MineMapProps> = ({
                                   ? 'bg-red-950/40 border-red-500 text-red-200 shadow-[0_0_12px_rgba(239,68,68,0.25)] ring-1 ring-red-400'
                                   : isWarning
                                   ? 'bg-amber-950/30 border-amber-500/70 text-amber-200'
+                                  : isSensorFault
+                                  ? 'bg-amber-950/25 border-amber-500/60 text-amber-200'
                                   : matchesSearch
                                   ? 'bg-cyan-950/40 border-cyan-400 text-cyan-200 ring-1 ring-cyan-400'
                                   : 'bg-[#0e1726] border-[#1c2a3e] hover:border-cyan-500/50 hover:bg-[#131f32] text-slate-200'
@@ -308,6 +315,8 @@ export const MineMap: React.FC<MineMapProps> = ({
                                       ? 'bg-red-500 ring-2 ring-red-400 animate-pulse'
                                       : isWarning
                                       ? 'bg-amber-400'
+                                      : isSensorFault
+                                      ? 'bg-amber-500 ring-1 ring-amber-300'
                                       : 'bg-emerald-400'
                                   }`}
                                 />
@@ -318,6 +327,11 @@ export const MineMap: React.FC<MineMapProps> = ({
                                     {isDanger && (
                                       <span className="text-[9px] px-1 rounded bg-red-600 text-white font-sans font-bold">
                                         HAZARD
+                                      </span>
+                                    )}
+                                    {isSensorFault && (
+                                      <span className="text-[9px] px-1 rounded bg-amber-700 text-amber-100 font-sans font-bold">
+                                        FAULT
                                       </span>
                                     )}
                                   </div>

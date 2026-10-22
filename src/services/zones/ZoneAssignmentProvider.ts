@@ -183,7 +183,7 @@ export class ZoneAssignmentProvider implements IZoneAssignmentProvider {
           offlineCount++;
         } else if (helmet.safety.status === 'DANGER') {
           dangerCount++;
-        } else if (helmet.safety.status === 'WARNING') {
+        } else if (helmet.safety.status === 'WARNING' || helmet.safety.status === 'SENSOR_FAULT') {
           warningCount++;
         } else {
           safeCount++;
