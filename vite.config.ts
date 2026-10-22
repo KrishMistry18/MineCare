@@ -31,10 +31,24 @@ function backendApiPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {
   const isBuild = command === 'build';
+  const useLocalBackend = process.env.VITE_USE_LOCAL_BACKEND === 'true';
+
   return {
     server: {
       host: '0.0.0.0',
       port: 5173,
+      proxy: !useLocalBackend
+        ? {
+            '/api/v1': {
+              target: 'https://minecare-backend.onrender.com',
+              changeOrigin: true,
+              secure: true,
+              headers: {
+                Origin: 'https://mine-care.vercel.app',
+              },
+            },
+          }
+        : undefined,
     },
     define: isBuild
       ? {
@@ -45,7 +59,7 @@ export default defineConfig(({ command }) => {
     plugins: [
       tailwindcss(),
       react(),
-      backendApiPlugin(),
+      ...(useLocalBackend ? [backendApiPlugin()] : []),
     ],
   };
 });
