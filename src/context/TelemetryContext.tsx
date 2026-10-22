@@ -27,6 +27,7 @@ export interface TelemetryContextValue {
   getTelemetryHistory: (helmetId: string) => TelemetryHistoryPoint[];
   acknowledgeAlert: (alertId: string) => void;
   resolveAlert: (alertId: string, notes?: string) => void;
+  clearAlertHistory: () => void;
   triggerScenario: (scenario: ScenarioType, helmetId?: string) => Promise<void> | void;
   audioMuted: boolean;
   toggleAudioMute: () => void;
@@ -168,6 +169,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         getTelemetryHistory: (id: string) => service.getTelemetryHistory(id),
         acknowledgeAlert: (alertId: string) => service.acknowledgeAlert(alertId),
         resolveAlert: (alertId: string, notes?: string) => service.resolveAlert(alertId, notes),
+        clearAlertHistory: () => service.clearAlertHistory(),
         triggerScenario: (scenario: ScenarioType, helmetId?: string) =>
           service.triggerScenario(scenario, helmetId),
         audioMuted,

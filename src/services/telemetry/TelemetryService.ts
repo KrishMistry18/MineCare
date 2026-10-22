@@ -167,7 +167,8 @@ export class TelemetryService {
       // 2. Load alerts: combine active and resolved alert history without duplicates
       const alertsMap = new Map<string, SafetyAlert>();
       if (historyAlertsRes.status === 'fulfilled' && Array.isArray(historyAlertsRes.value)) {
-        historyAlertsRes.value.forEach((a) => {
+        // Cap historical alerts to the most recent 50 to avoid loading thousands of stale records into browser memory
+        historyAlertsRes.value.slice(0, 50).forEach((a) => {
           const worker = this.zoneProvider.getWorkerByHelmetId(a.helmet_id);
           alertsMap.set(a.id, this.convertDbAlertToSafetyAlert(a, worker?.name, worker?.currentWorkZone || undefined));
         });
@@ -819,6 +820,11 @@ export class TelemetryService {
 
     // Call backend authoritative endpoint
     alertService.resolveAlert(alertId, notes).catch(() => {});
+  }
+
+  public clearAlertHistory(): void {
+    this.alerts = this.alerts.filter((a) => !a.resolved);
+    this.notifyListeners();
   }
 
   public async triggerScenario(scenario: ScenarioType, helmetId?: string): Promise<void> {

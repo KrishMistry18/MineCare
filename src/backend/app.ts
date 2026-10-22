@@ -1908,7 +1908,10 @@ export class BackendApp {
         if (currentUser.role === 'WORKER') {
           historyAlerts = historyAlerts.filter((a) => a.worker_id === currentUser.worker_id);
         }
-        this.sendJson(res, 200, historyAlerts);
+        const limit = pagination.sanitized?.limit || 50;
+        const offset = pagination.sanitized?.offset || 0;
+        const paginatedAlerts = historyAlerts.slice(offset, offset + limit);
+        this.sendJson(res, 200, paginatedAlerts);
         return true;
       }
 

@@ -36,7 +36,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ currentRoute, onRouteChange }) => {
   const { alerts, activeDangerCount } = useTelemetry();
   const { role } = useAuth();
-  const unacknowledgedCount = alerts.filter(a => !a.acknowledged).length;
+  const activeAlertsCount = alerts.filter(a => !a.resolved).length;
 
   const [streamingTime, setStreamingTime] = useState<string>('');
 
@@ -70,7 +70,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentRoute, onRouteChange })
       route: '/alerts',
       label: 'Alerts',
       icon: Bell,
-      badge: unacknowledgedCount > 0 ? `${unacknowledgedCount}` : null,
+      badge: activeAlertsCount > 0 ? `${activeAlertsCount}` : null,
     },
     {
       route: '/analytics',

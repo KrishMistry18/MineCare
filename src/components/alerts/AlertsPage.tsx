@@ -13,7 +13,7 @@ import {
 import { useTelemetry } from '../../context/TelemetryContext';
 
 export const AlertsPage: React.FC = () => {
-  const { alerts, acknowledgeAlert, resolveAlert } = useTelemetry();
+  const { alerts, acknowledgeAlert, resolveAlert, clearAlertHistory } = useTelemetry();
   const [activeTab, setActiveTab] = useState<'ACTIVE' | 'HISTORY'>('ACTIVE');
 
   const activeAlerts = alerts.filter(a => !a.resolved);
@@ -34,34 +34,45 @@ export const AlertsPage: React.FC = () => {
       </div>
 
       {/* Tabs Switcher: Active (X) vs History (Y) */}
-      <div className="flex items-center space-x-2 border-b border-[#182335] pb-2">
-        <button
-          onClick={() => setActiveTab('ACTIVE')}
-          className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-            activeTab === 'ACTIVE'
-              ? 'bg-[#131d2c] text-white border border-[#23354e]'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>Active</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-red-600/80 text-white font-bold">
-            {activeAlerts.length}
-          </span>
-        </button>
+      <div className="flex items-center justify-between border-b border-[#182335] pb-2">
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setActiveTab('ACTIVE')}
+            className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              activeTab === 'ACTIVE'
+                ? 'bg-[#131d2c] text-white border border-[#23354e]'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>Active</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-red-600/80 text-white font-bold">
+              {activeAlerts.length}
+            </span>
+          </button>
 
-        <button
-          onClick={() => setActiveTab('HISTORY')}
-          className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-            activeTab === 'HISTORY'
-              ? 'bg-[#131d2c] text-white border border-[#23354e]'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>History</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-[#1e2a3c] text-slate-300 font-bold">
-            {historyAlerts.length}
-          </span>
-        </button>
+          <button
+            onClick={() => setActiveTab('HISTORY')}
+            className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              activeTab === 'HISTORY'
+                ? 'bg-[#131d2c] text-white border border-[#23354e]'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>History</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-[#1e2a3c] text-slate-300 font-bold">
+              {historyAlerts.length}
+            </span>
+          </button>
+        </div>
+
+        {activeTab === 'HISTORY' && historyAlerts.length > 0 && (
+          <button
+            onClick={() => clearAlertHistory()}
+            className="text-xs text-slate-400 hover:text-rose-400 font-mono transition-colors flex items-center space-x-1"
+          >
+            <span>Clear history</span>
+          </button>
+        )}
       </div>
 
       {/* Alerts List */}
