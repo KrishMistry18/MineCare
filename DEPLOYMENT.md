@@ -70,7 +70,7 @@ This document details the production cloud deployment architecture, configuratio
 | `SUPABASE_SERVICE_ROLE_KEY` | **Yes** | `eyJhbGciOiJIUz...` — Service-role secret for administrative GoTrue user management and server verification. |
 | `SUPABASE_ANON_KEY` | Optional | `eyJhbGciOiJIUz...` — Public anon key for fallback client initialization. |
 | `SUPABASE_JWT_SECRET` | Optional | Secret key used for symmetric HMAC-SHA256 JWT validation. |
-| `CORS_ORIGIN` | **Yes** | `https://minecare.vercel.app` — Comma-separated list of permitted frontend origins. Wildcard `*` is strictly blocked in production. |
+| `CORS_ORIGIN` | **Yes** | `https://mine-care.vercel.app` — Comma-separated list of permitted frontend origins. Wildcard `*` is strictly blocked in production. |
 | `MINECARE_DEVICE_SECRET` | Optional | Shared gateway secret for hardware gateway token authentication. |
 | `MINECARE_REVOKED_DEVICE_TOKENS` | Optional | Comma-separated list of revoked hardware tokens. |
 
@@ -127,7 +127,7 @@ This document details the production cloud deployment architecture, configuratio
    - `VITE_SUPABASE_URL`: `https://<project-ref>.supabase.co`
    - `VITE_SUPABASE_ANON_KEY`: `<anon-key>`
 4. Deploy the project.
-5. In your Render backend dashboard, update `CORS_ORIGIN` to match your Vercel deployment URL (e.g. `https://minecare.vercel.app`).
+5. In your Render backend dashboard, update `CORS_ORIGIN` to match your Vercel deployment URL (e.g. `https://mine-care.vercel.app`).
 
 ---
 

@@ -1,7 +1,9 @@
 # ⛑️ MineCare — Smart Mine Safety Helmet
 
-> **"Monitor the environment. Detect the danger. Protect the worker."**
+> **"Monitor the environment. Detect the danger. Protect the worker."**  
+> 🌐 **Live Web Application**: [https://mine-care.vercel.app/login](https://mine-care.vercel.app/login)
 
+[![Live App](https://img.shields.io/badge/Live_App-mine--care.vercel.app-000000?style=flat-square&logo=vercel)](https://mine-care.vercel.app/login)
 [![React](https://img.shields.io/badge/React-19.2-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-8.3-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vite.dev/)
@@ -596,7 +598,7 @@ npm test
 ## 21. Cloud Deployment & Operating Boundaries
 
 MineCare is configured for cloud prototype and demo deployment across a modern decoupled architecture:
-- **Frontend**: React + TypeScript + Vite deployed to **Vercel** (`https://<project>.vercel.app`).
+- **Frontend**: React + TypeScript + Vite deployed to **Vercel** ([https://mine-care.vercel.app](https://mine-care.vercel.app) / Login: [https://mine-care.vercel.app/login](https://mine-care.vercel.app/login)).
 - **Backend API**: Node.js standalone HTTP server deployed to **Render Web Service** (`https://<project>.onrender.com`).
 - **Realtime**: Dual-channel architecture supporting **Supabase Realtime** (`postgres_changes` via WebSockets) with automatic fallback to **Server-Sent Events (SSE)** via `GET /api/v1/realtime/stream` on the Render backend (featuring a 25-second keep-alive heartbeat).
 

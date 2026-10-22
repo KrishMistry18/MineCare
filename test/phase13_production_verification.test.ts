@@ -153,7 +153,7 @@ async function runPhase13Suite() {
   console.log('--- 1. CLOUD DEPLOYMENT REACHABILITY ---');
   let vercelStatus = 0;
   try {
-    const vRes = await fetch('https://minecare.vercel.app', { signal: AbortSignal.timeout(6000) });
+    const vRes = await fetch('https://mine-care.vercel.app', { signal: AbortSignal.timeout(6000) });
     vercelStatus = vRes.status;
   } catch {
     vercelStatus = 0;
@@ -184,7 +184,7 @@ async function runPhase13Suite() {
 
     const { res: corsRes } = createMockRes();
     const corsPermitted = CorsManager.handleCors(
-      createMockReq({ method: 'GET', url: '/api/v1/system/health', headers: { origin: 'https://minecare.vercel.app' } }),
+      createMockReq({ method: 'GET', url: '/api/v1/system/health', headers: { origin: 'https://mine-care.vercel.app' } }),
       corsRes
     );
     check(corsPermitted === true, 'CORS', 'Vercel production origin permitted');
@@ -193,7 +193,7 @@ async function runPhase13Suite() {
     const originalEnv = process.env.NODE_ENV;
     try {
       process.env.NODE_ENV = 'production';
-      process.env.CORS_ORIGIN = 'https://minecare.vercel.app';
+      process.env.CORS_ORIGIN = 'https://mine-care.vercel.app';
       const blocked = CorsManager.handleCors(
         createMockReq({ method: 'GET', url: '/api/v1/system/health', headers: { origin: 'https://attacker.evil' } }),
         badCorsRes

@@ -172,7 +172,7 @@ async function runProductionSmokeTests() {
   // -------------------------------------------------------------------------
   console.log('\n--- 2. PRODUCTION CORS & ORIGIN CONTROL ---');
   {
-    const vercelOrigin = 'https://minecare.vercel.app';
+    const vercelOrigin = 'https://mine-care.vercel.app';
     const unauthorizedOrigin = 'https://malicious-miner-site.evil';
 
     // Mock production env with CORS_ORIGIN set to Vercel
