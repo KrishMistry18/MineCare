@@ -75,8 +75,8 @@ export const AlertsPage: React.FC = () => {
           </div>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
             {activeTab === 'ACTIVE'
-              ? 'Every reporting helmet is within prototype thresholds. Trigger a simulation scenario to test alerting.'
-              : 'Alerts that have returned to normal or were signed off will appear here.'}
+              ? 'Every reporting helmet is within prototype thresholds.'
+              : 'Alerts that have been acknowledged and resolved will appear here.'}
           </p>
         </div>
       ) : (

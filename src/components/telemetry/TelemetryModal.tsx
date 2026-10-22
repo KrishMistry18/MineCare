@@ -79,7 +79,7 @@ export const TelemetryModal: React.FC<TelemetryModalProps> = ({ helmetId, onClos
                 <span className="text-xs text-slate-400">{worker?.role}</span>
               </div>
               <div className="text-xs text-slate-400 mt-0.5">
-                {worker?.currentWorkZone ? `Zone: ${worker.currentWorkZone}` : 'Checked Out (Off-Shift)'} · Battery {worker?.battery}% · RSSI {telemetry.rssi} dBm
+                {worker?.currentWorkZone ? `Zone: ${worker.currentWorkZone}` : 'Checked Out (Off-Shift)'} · Battery {worker?.battery}% · RSSI {telemetry ? `${telemetry.rssi} dBm` : 'N/A'}
               </div>
             </div>
           </div>
@@ -162,8 +162,18 @@ export const TelemetryModal: React.FC<TelemetryModalProps> = ({ helmetId, onClos
         {/* Modal Body */}
         <div className="p-4 overflow-y-auto space-y-4">
           
+          {/* No Telemetry Recorded Banner */}
+          {!telemetry && (
+            <div className="p-4 rounded-xl bg-[#090e18] border border-[#1b273b] text-center space-y-1.5">
+              <div className="text-sm font-bold text-slate-300 font-mono">NO TELEMETRY RECORDED</div>
+              <p className="text-xs text-slate-400">
+                This helmet has not yet reported any sensor packets to the backend database.
+              </p>
+            </div>
+          )}
+
           {/* Sensor Fault Alert Banner */}
-          {(safety.status === 'SENSOR_FAULT' || (telemetry.sensorHealth && (!telemetry.sensorHealth.dht22 || !telemetry.sensorHealth.mpu6050))) && (
+          {telemetry && (safety.status === 'SENSOR_FAULT' || (telemetry.sensorHealth && (!telemetry.sensorHealth.dht22 || !telemetry.sensorHealth.mpu6050))) && (
             <div className="p-3 rounded-lg bg-amber-950/25 border border-amber-500/60 flex items-start space-x-2.5 text-xs text-amber-200">
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <div className="space-y-0.5">
@@ -184,24 +194,24 @@ export const TelemetryModal: React.FC<TelemetryModalProps> = ({ helmetId, onClos
             <div className="p-3 rounded-lg bg-[#070b12] border border-[#162234]">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 uppercase">
                 <span>TEMP (DHT22)</span>
-                <span className={telemetry.sensorHealth?.dht22 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-                  {telemetry.sensorHealth?.dht22 ? 'OK' : 'FAULT'}
+                <span className={!telemetry ? 'text-slate-500 font-bold' : telemetry.sensorHealth?.dht22 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                  {!telemetry ? '--' : telemetry.sensorHealth?.dht22 ? 'OK' : 'FAULT'}
                 </span>
               </div>
-              <div className={`text-lg font-bold font-mono mt-0.5 ${!telemetry.sensorHealth?.dht22 ? 'text-amber-400 text-sm' : telemetry.dht22.temperature > 40 ? 'text-amber-400' : 'text-slate-100'}`}>
-                {telemetry.sensorHealth?.dht22 ? `${telemetry.dht22.temperature.toFixed(1)} °C` : 'UNAVAILABLE'}
+              <div className={`text-lg font-bold font-mono mt-0.5 ${!telemetry ? 'text-slate-500 font-normal' : !telemetry.sensorHealth?.dht22 ? 'text-amber-400 text-sm' : telemetry.dht22.temperature > 40 ? 'text-amber-400' : 'text-slate-100'}`}>
+                {!telemetry ? '--' : telemetry.sensorHealth?.dht22 ? `${telemetry.dht22.temperature.toFixed(1)} °C` : 'UNAVAILABLE'}
               </div>
             </div>
 
             <div className="p-3 rounded-lg bg-[#070b12] border border-[#162234]">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 uppercase">
                 <span>HUMIDITY</span>
-                <span className={telemetry.sensorHealth?.dht22 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-                  {telemetry.sensorHealth?.dht22 ? 'OK' : 'FAULT'}
+                <span className={!telemetry ? 'text-slate-500 font-bold' : telemetry.sensorHealth?.dht22 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                  {!telemetry ? '--' : telemetry.sensorHealth?.dht22 ? 'OK' : 'FAULT'}
                 </span>
               </div>
-              <div className={`text-lg font-bold font-mono mt-0.5 ${!telemetry.sensorHealth?.dht22 ? 'text-amber-400 text-sm' : 'text-slate-100'}`}>
-                {telemetry.sensorHealth?.dht22 ? `${Math.round(telemetry.dht22.humidity)} %` : 'UNAVAILABLE'}
+              <div className={`text-lg font-bold font-mono mt-0.5 ${!telemetry ? 'text-slate-500 font-normal' : !telemetry.sensorHealth?.dht22 ? 'text-amber-400 text-sm' : 'text-slate-100'}`}>
+                {!telemetry ? '--' : telemetry.sensorHealth?.dht22 ? `${Math.round(telemetry.dht22.humidity)} %` : 'UNAVAILABLE'}
               </div>
             </div>
 
@@ -210,20 +220,20 @@ export const TelemetryModal: React.FC<TelemetryModalProps> = ({ helmetId, onClos
                 <span>GAS (RAW ADC)</span>
                 <span className="text-slate-500 font-normal text-[9px]">ANALOG A0</span>
               </div>
-              <div className={`text-lg font-bold font-mono mt-0.5 ${telemetry.mq2.rawGasValue > 800 ? 'text-amber-400' : 'text-slate-100'}`}>
-                {telemetry.mq2.rawGasValue}
+              <div className={`text-lg font-bold font-mono mt-0.5 ${!telemetry ? 'text-slate-500 font-normal' : telemetry.mq2.rawGasValue > 800 ? 'text-amber-400' : 'text-slate-100'}`}>
+                {!telemetry ? '--' : telemetry.mq2.rawGasValue}
               </div>
             </div>
 
             <div className="p-3 rounded-lg bg-[#070b12] border border-[#162234]">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 uppercase">
                 <span>ACCEL (MPU6050)</span>
-                <span className={telemetry.sensorHealth?.mpu6050 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-                  {telemetry.sensorHealth?.mpu6050 ? 'OK' : 'FAULT'}
+                <span className={!telemetry ? 'text-slate-500 font-bold' : telemetry.sensorHealth?.mpu6050 ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                  {!telemetry ? '--' : telemetry.sensorHealth?.mpu6050 ? 'OK' : 'FAULT'}
                 </span>
               </div>
-              <div className={`text-lg font-bold font-mono mt-0.5 ${!telemetry.sensorHealth?.mpu6050 ? 'text-amber-400 text-sm' : telemetry.mpu6050.totalAcceleration > 15 ? 'text-red-400' : 'text-slate-100'}`}>
-                {telemetry.sensorHealth?.mpu6050 ? `${telemetry.mpu6050.totalAcceleration.toFixed(1)} m/s²` : 'UNAVAILABLE'}
+              <div className={`text-lg font-bold font-mono mt-0.5 ${!telemetry ? 'text-slate-500 font-normal' : !telemetry.sensorHealth?.mpu6050 ? 'text-amber-400 text-sm' : telemetry.mpu6050.totalAcceleration > 15 ? 'text-red-400' : 'text-slate-100'}`}>
+                {!telemetry ? '--' : telemetry.sensorHealth?.mpu6050 ? `${telemetry.mpu6050.totalAcceleration.toFixed(1)} m/s²` : 'UNAVAILABLE'}
               </div>
             </div>
           </div>

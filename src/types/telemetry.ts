@@ -49,6 +49,8 @@ export interface HelmetTelemetryPacket {
   outputs: HardwareOutputs;
   rssi: number; // dBm signal indicator (-40 to -90)
   batteryVolts: number; // Simulated battery voltage (3.5 - 4.2V)
+  isSimulated?: boolean;
+  telemetrySource?: 'DATABASE' | 'LIVE_HARDWARE' | 'SIMULATION';
 }
 
 export type ScenarioType =

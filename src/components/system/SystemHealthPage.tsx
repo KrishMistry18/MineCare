@@ -137,8 +137,8 @@ export const SystemHealthPage: React.FC = () => {
             Hardware Decoupling Architecture
           </div>
           <p className="text-slate-400 leading-relaxed text-[11px]">
-            No physical ESP8266 hardware is connected yet. The current provider is <code className="text-cyan-300 font-mono">MockTelemetryProvider</code>.
-            When the physical NodeMCU hardware is ready in Phase 2, <code className="text-cyan-300 font-mono">ESP8266TelemetryProvider</code> will plug in seamlessly through the established <code className="text-cyan-300 font-mono">ITelemetryProvider</code> interface without requiring any redesign of the dashboard, alerts, or analytics layers.
+            Physical ESP8266 devices ingest securely via <code className="text-cyan-300 font-mono">/api/v1/telemetry</code> using authorized bearer tokens.
+            The dashboard hydrates from PostgreSQL and Supabase Realtime via the unified <code className="text-cyan-300 font-mono">TelemetryService</code> and <code className="text-cyan-300 font-mono">ITelemetryProvider</code> interface without coupling frontend views to underlying transport.
           </p>
         </div>
       </div>

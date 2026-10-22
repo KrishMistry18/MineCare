@@ -69,7 +69,7 @@ export const SimulationConsole: React.FC = () => {
             </h3>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Drives the mock telemetry source only. No hardware is connected.
+            Injects authorized simulation scenarios into the telemetry pipeline.
           </p>
         </div>
         {/* Active scenario status badge */}

@@ -5,7 +5,7 @@
 import type { HelmetTelemetryPacket } from './telemetry';
 import type { SafetyEvaluationResult } from './safety';
 
-export type ConnectivityStatus = 'ONLINE' | 'OFFLINE' | 'DEGRADED';
+export type ConnectivityStatus = 'ONLINE' | 'STALE' | 'OFFLINE' | 'DEGRADED';
 
 export interface PinoutMapping {
   component: string;
@@ -93,6 +93,10 @@ export interface HelmetDevice {
   currentWorkZone?: string | null;
   connectivity: ConnectivityStatus;
   lastHeartbeat: string;
-  telemetry: HelmetTelemetryPacket;
+  telemetry: HelmetTelemetryPacket | null;
   safety: SafetyEvaluationResult;
+  hasData: boolean;
+  dataLoadingState?: 'IDLE' | 'LOADING' | 'LOADED' | 'ERROR';
+  errorMessage?: string | null;
+  telemetrySource?: 'DATABASE' | 'LIVE_HARDWARE' | 'SIMULATION' | 'NO_DATA';
 }

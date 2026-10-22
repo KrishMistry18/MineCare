@@ -37,24 +37,27 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
 
   const totalHelmets = helmets.length;
   const offlineHelmets = helmets.filter(h => h.connectivity === 'OFFLINE').length;
-  const safeHelmets = helmets.filter(h => h.safety.status === 'SAFE' && h.connectivity !== 'OFFLINE').length;
+  const reportingHelmets = helmets.filter(h => h.connectivity !== 'OFFLINE' && h.hasData).length;
+  const safeHelmets = helmets.filter(h => h.safety.status === 'SAFE' && h.connectivity === 'ONLINE' && h.hasData).length;
 
   // Active alerts that are unresolved
   const activeAlertsList = alerts.filter(a => !a.resolved);
 
-  // Sort helmets by severity: DANGER (0), WARNING (1), SENSOR_FAULT (2), OFFLINE (3), SAFE (4)
+  // Sort helmets by severity: DANGER (0), WARNING (1), SENSOR_FAULT (2), STALE (3), OFFLINE (4), NO DATA (5), SAFE (6)
   const sortedHelmets = [...helmets].sort((a, b) => {
     const getScore = (h: typeof a) => {
       if (h.safety.status === 'DANGER') return 0;
       if (h.safety.status === 'WARNING') return 1;
       if (h.safety.status === 'SENSOR_FAULT') return 2;
-      if (h.connectivity === 'OFFLINE') return 3;
-      return 4;
+      if (h.connectivity === 'STALE') return 3;
+      if (h.connectivity === 'OFFLINE') return 4;
+      if (!h.hasData || !h.telemetry) return 5;
+      return 6;
     };
     return getScore(a) - getScore(b);
   });
 
-  // Display all 16 commissioned helmets ordered by severity
+  // Display all commissioned helmets ordered by severity
   const displayHelmets = sortedHelmets;
 
   return (
@@ -66,13 +69,13 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
             Control room
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Simulated telemetry — no physical helmet is connected yet.
+            Fleet telemetry monitoring & real-time safety operations
           </p>
         </div>
 
         <div className="text-xs font-mono text-slate-400 self-start sm:self-auto flex items-center space-x-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse" />
-          <span>Last telemetry {lastTelemetryTime}</span>
+          <span className={`w-1.5 h-1.5 rounded-full inline-block ${lastTelemetryTime !== 'No data recorded' ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+          <span>Last telemetry: {lastTelemetryTime}</span>
         </div>
       </div>
 
@@ -88,7 +91,7 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-3xl font-bold text-white font-mono">
-              {totalHelmets}
+              {reportingHelmets}
             </div>
             <div className="text-[11px] text-slate-400 mt-1 font-mono">
               {totalHelmets} commissioned

@@ -68,7 +68,7 @@ export const HelmetsPage: React.FC<HelmetsPageProps> = ({
             Helmet fleet & Mine Map
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            {helmets.length} simulated helmets streaming telemetry · Zone-based underground occupancy.
+            {helmets.length} commissioned helmets · Zone-based underground occupancy.
           </p>
         </div>
 

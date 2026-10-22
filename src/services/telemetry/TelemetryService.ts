@@ -46,8 +46,14 @@ export class TelemetryService {
   private telemetryHistories: Map<string, TelemetryHistoryPoint[]> = new Map();
   private lastSeenTimestamps: Map<string, number> = new Map();
   private connectivityStates: Map<string, ConnectivityStatus> = new Map();
+  private latestPacketTimestamps: Map<string, number> = new Map();
+  private helmetDataLoadingStates: Map<string, 'IDLE' | 'LOADING' | 'LOADED' | 'ERROR'> = new Map();
+  private helmetErrorStates: Map<string, string> = new Map();
   private alerts: SafetyAlert[] = [];
   private lastTelemetryTime: string = '';
+  private latestTelemetryTimestamp: number = 0;
+  private dbHelmetsList: DbHelmet[] = [];
+  private hydrationPromise: Promise<void> | null = null;
 
   // Listeners for UI state updates
   private listeners: Set<ServiceListener> = new Set();
@@ -72,22 +78,35 @@ export class TelemetryService {
   public static resetInstance(): void {
     if (TelemetryService.instance) {
       TelemetryService.instance.cleanup();
+      TelemetryService.instance.latestPackets.clear();
+      TelemetryService.instance.safetyStates.clear();
+      TelemetryService.instance.telemetryHistories.clear();
+      TelemetryService.instance.lastSeenTimestamps.clear();
+      TelemetryService.instance.connectivityStates.clear();
+      TelemetryService.instance.latestPacketTimestamps.clear();
+      TelemetryService.instance.helmetDataLoadingStates.clear();
+      TelemetryService.instance.helmetErrorStates.clear();
+      TelemetryService.instance.alerts = [];
+      TelemetryService.instance.lastTelemetryTime = '';
+      TelemetryService.instance.latestTelemetryTimestamp = 0;
+      TelemetryService.instance.dbHelmetsList = [];
+      TelemetryService.instance.hydrationPromise = null;
       TelemetryService.instance = null;
     }
   }
 
   private init(): void {
-    // 1. Initialize fleet baselines so UI immediately renders commissioned helmets
+    // 1. Initialize registered helmets with unhydrated / offline state without fake normal packets
     const registered = this.provider.getRegisteredHelmetIds();
     registered.forEach((id) => {
-      this.latestPackets.set(id, this.createPlaceholderPacket(id));
-      this.connectivityStates.set(id, 'ONLINE');
+      this.connectivityStates.set(id, 'OFFLINE');
+      this.helmetDataLoadingStates.set(id, 'IDLE');
       this.safetyStates.set(id, {
         status: 'SAFE',
         primaryTrigger: 'NOMINAL',
-        triggerDetails: ['All parameters normal'],
-        outputs: { greenLed: true, redLed: false, buzzer: false },
-        isPrototypeNotice: true,
+        triggerDetails: ['No telemetry recorded'],
+        outputs: { greenLed: false, redLed: false, buzzer: false },
+        isPrototypeNotice: false,
       });
     });
 
@@ -99,37 +118,163 @@ export class TelemetryService {
       this.notifyListeners();
     });
 
-    // 4. Do NOT auto-run background demo simulation — live data comes from hardware and backend realtime!
+    // 4. Listen to Realtime connection state for automatic state reconciliation on reconnect
+    this.realtimeService.onConnectionStateChange((state) => {
+      if (state === 'CONNECTED') {
+        void this.reconcileBackendState();
+      }
+    });
+
+    // 5. Subscribe to local mock provider
     this.provider.subscribeAll((packet) => {
       this.handleRealtimeTelemetry(packet);
     });
-    // Automated background demo simulation disabled so it does not overwrite live hardware data.
 
-    // 5. Asynchronously load initial authoritative helmets and active alerts
+    // 6. Asynchronously load initial authoritative helmets, latest telemetry, and alert history
     void this.loadInitialState();
   }
 
+  public async reconcileBackendState(): Promise<void> {
+    await this.loadInitialState();
+  }
+
   public async loadInitialState(): Promise<void> {
+    if (this.hydrationPromise) {
+      return this.hydrationPromise;
+    }
+    this.hydrationPromise = this.executeInitialStateLoad();
     try {
-      const [dbHelmets, dbAlerts] = await Promise.allSettled([
+      await this.hydrationPromise;
+    } finally {
+      this.hydrationPromise = null;
+    }
+  }
+
+  private async executeInitialStateLoad(): Promise<void> {
+    try {
+      // 1. Fetch helmets, active alerts, and resolved alert history concurrently
+      const [dbHelmetsRes, activeAlertsRes, historyAlertsRes] = await Promise.allSettled([
         helmetService.getHelmets(),
         alertService.getActiveAlerts(),
+        alertService.getAlertHistory(),
       ]);
 
-      if (dbHelmets.status === 'fulfilled' && Array.isArray(dbHelmets.value)) {
-        dbHelmets.value.forEach((h) => this.handleRealtimeHelmet(h));
+      if (dbHelmetsRes.status === 'fulfilled' && Array.isArray(dbHelmetsRes.value)) {
+        this.dbHelmetsList = dbHelmetsRes.value;
+        dbHelmetsRes.value.forEach((h) => this.handleRealtimeHelmet(h));
       }
 
-      if (dbAlerts.status === 'fulfilled' && Array.isArray(dbAlerts.value)) {
-        this.alerts = dbAlerts.value.map((a) => {
+      // 2. Load alerts: combine active and resolved alert history without duplicates
+      const alertsMap = new Map<string, SafetyAlert>();
+      if (historyAlertsRes.status === 'fulfilled' && Array.isArray(historyAlertsRes.value)) {
+        historyAlertsRes.value.forEach((a) => {
           const worker = this.zoneProvider.getWorkerByHelmetId(a.helmet_id);
-          return this.convertDbAlertToSafetyAlert(a, worker?.name, worker?.currentWorkZone || undefined);
+          alertsMap.set(a.id, this.convertDbAlertToSafetyAlert(a, worker?.name, worker?.currentWorkZone || undefined));
         });
       }
+      if (activeAlertsRes.status === 'fulfilled' && Array.isArray(activeAlertsRes.value)) {
+        activeAlertsRes.value.forEach((a) => {
+          const worker = this.zoneProvider.getWorkerByHelmetId(a.helmet_id);
+          alertsMap.set(a.id, this.convertDbAlertToSafetyAlert(a, worker?.name, worker?.currentWorkZone || undefined));
+        });
+      }
+      // Preserve any active alerts that arrived via realtime during network request
+      this.alerts.forEach((existing) => {
+        if (!alertsMap.has(existing.id)) {
+          alertsMap.set(existing.id, existing);
+        }
+      });
+      this.alerts = Array.from(alertsMap.values()).sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+
+      // 3. Hydrate actual latest persisted telemetry for each helmet
+      const helmetIdsToHydrate = this.dbHelmetsList.length > 0
+        ? this.dbHelmetsList.map((h) => h.id)
+        : this.provider.getRegisteredHelmetIds();
+
+      await Promise.allSettled(
+        helmetIdsToHydrate.map(async (helmetId) => {
+          this.helmetDataLoadingStates.set(helmetId, 'LOADING');
+          try {
+            const latestTelemetry = await helmetService.getLatestTelemetry(helmetId);
+            if (latestTelemetry) {
+              const packetTime = new Date(latestTelemetry.timestamp).getTime();
+              const currentLatest = this.latestPacketTimestamps.get(helmetId) || 0;
+
+              // Race condition guard: Older initial API response cannot overwrite newer realtime readings
+              if (packetTime >= currentLatest) {
+                this.latestPacketTimestamps.set(helmetId, packetTime);
+                const parsedPacket = this.parseDbTelemetryToPacket(latestTelemetry);
+                this.latestPackets.set(helmetId, parsedPacket);
+                this.helmetDataLoadingStates.set(helmetId, 'LOADED');
+                this.helmetErrorStates.delete(helmetId);
+
+                // Update connectivity based on actual measurement timestamp
+                const conn = this.evaluatePacketConnectivity(latestTelemetry.timestamp, Date.now());
+                this.connectivityStates.set(helmetId, conn);
+
+                // Update authoritative safety state
+                this.updateAuthoritativeSafetyState(helmetId, parsedPacket);
+
+                const dateObj = new Date(latestTelemetry.timestamp);
+                if (!this.lastTelemetryTime || packetTime > this.latestTelemetryTimestamp) {
+                  this.latestTelemetryTimestamp = packetTime;
+                  this.lastTelemetryTime = dateObj.toTimeString().split(' ')[0];
+                }
+              }
+            } else {
+              this.helmetDataLoadingStates.set(helmetId, 'LOADED');
+            }
+          } catch (err: any) {
+            if (err?.status === 404 || err?.message?.includes('No telemetry recorded')) {
+              // Helmet has NO telemetry history in database
+              this.helmetDataLoadingStates.set(helmetId, 'LOADED');
+              this.helmetErrorStates.delete(helmetId);
+              if (!this.latestPackets.has(helmetId)) {
+                this.connectivityStates.set(helmetId, 'OFFLINE');
+              }
+            } else {
+              // API failure: display loading/error state. Never silently substitute fake normal readings.
+              this.helmetDataLoadingStates.set(helmetId, 'ERROR');
+              this.helmetErrorStates.set(helmetId, err?.message || 'Failed to fetch latest telemetry');
+            }
+          }
+
+          // Fetch persisted history points if available
+          try {
+            const history = await helmetService.getTelemetryHistory(helmetId, 50);
+            if (Array.isArray(history) && history.length > 0) {
+              const currentHistory = this.telemetryHistories.get(helmetId) || [];
+              if (currentHistory.length === 0) {
+                const mapped = history.map((row) => ({
+                  timestamp: row.timestamp,
+                  timeFormatted: new Date(row.timestamp).toTimeString().split(' ')[0],
+                  temperature: Number(row.temperature),
+                  humidity: Number(row.humidity),
+                  rawGasValue: Number(row.gas_value),
+                  totalAcceleration: Number(row.total_acceleration),
+                  accelX: Number(row.acceleration_x),
+                  accelY: Number(row.acceleration_y),
+                  accelZ: Number(row.acceleration_z),
+                  gyroX: Number(row.gyro_x),
+                  gyroY: Number(row.gyro_y),
+                  gyroZ: Number(row.gyro_z),
+                  sosPressed: Boolean(row.sos_pressed),
+                  fallDetected: Boolean(row.fall_detected),
+                }));
+                this.telemetryHistories.set(helmetId, mapped);
+              }
+            }
+          } catch {
+            // Silently ignore history fetch errors
+          }
+        })
+      );
 
       this.notifyListeners();
-    } catch {
-      // Fallback gracefully
+    } catch (e) {
+      console.error('Error during initial state loading', e);
     }
   }
 
@@ -190,15 +335,71 @@ export class TelemetryService {
     this.listeners.clear();
   }
 
-  // --- Realtime Event Handlers ---
+  // --- Realtime Event Handlers & Data Processing ---
 
-  private handleRealtimeTelemetry(row: DbTelemetry | any): void {
+  public handleRealtimeTelemetry(row: DbTelemetry | any): void {
     const helmetId = row.helmet_id || row.helmetId;
     if (!helmetId) return;
 
-    const gasVal = Number(row.gas_value ?? row.mq2?.rawGasValue ?? row.gasConcentration ?? 200);
-    const tempVal = Number(row.temperature ?? row.dht22?.temperature ?? 26.5);
-    const humidityVal = Number(row.humidity ?? row.dht22?.humidity ?? 55.0);
+    const packetTime = new Date(row.timestamp || Date.now()).getTime();
+    const currentLatest = this.latestPacketTimestamps.get(helmetId) || 0;
+
+    // Race condition guard: Older out-of-order realtime packet cannot overwrite newer reading
+    if (packetTime < currentLatest) {
+      return;
+    }
+    this.latestPacketTimestamps.set(helmetId, packetTime);
+
+    const packet = this.parseDbTelemetryToPacket(row);
+    this.latestPackets.set(helmetId, packet);
+    this.lastSeenTimestamps.set(helmetId, Date.now());
+    this.connectivityStates.set(helmetId, this.evaluatePacketConnectivity(packet.timestamp, Date.now()));
+    this.helmetDataLoadingStates.set(helmetId, 'LOADED');
+    this.helmetErrorStates.delete(helmetId);
+
+    // Update authoritative safety state
+    this.updateAuthoritativeSafetyState(helmetId, packet);
+
+    // Update rolling history buffer (100 points)
+    const history = this.telemetryHistories.get(helmetId) || [];
+    const dateObj = new Date(packet.timestamp);
+    const timeFormatted = dateObj.toTimeString().split(' ')[0];
+
+    const historyPoint: TelemetryHistoryPoint = {
+      timestamp: packet.timestamp,
+      timeFormatted,
+      temperature: packet.dht22.temperature,
+      humidity: packet.dht22.humidity,
+      rawGasValue: packet.mq2.rawGasValue,
+      totalAcceleration: packet.mpu6050.totalAcceleration,
+      accelX: packet.mpu6050.accelX,
+      accelY: packet.mpu6050.accelY,
+      accelZ: packet.mpu6050.accelZ,
+      gyroX: packet.mpu6050.gyroX,
+      gyroY: packet.mpu6050.gyroY,
+      gyroZ: packet.mpu6050.gyroZ,
+      sosPressed: packet.sosPressed,
+      fallDetected: packet.fallDetected,
+    };
+
+    history.push(historyPoint);
+    if (history.length > 100) {
+      history.shift();
+    }
+    this.telemetryHistories.set(helmetId, history);
+
+    // Update authoritative last telemetry time for dashboard
+    this.lastTelemetryTime = timeFormatted;
+    this.latestTelemetryTimestamp = packetTime;
+
+    this.notifyListeners();
+  }
+
+  public parseDbTelemetryToPacket(row: DbTelemetry | any): HelmetTelemetryPacket {
+    const helmetId = row.helmet_id || row.helmetId;
+    const gasVal = Number(row.gas_value ?? row.mq2?.rawGasValue ?? row.gasConcentration ?? 0);
+    const tempVal = Number(row.temperature ?? row.dht22?.temperature ?? 0);
+    const humidityVal = Number(row.humidity ?? row.dht22?.humidity ?? 0);
     const isSos = Boolean(row.sos_pressed ?? row.sosPressed ?? false);
     const isFall = Boolean(row.fall_detected ?? row.fallDetected ?? false);
     const totalAccel = Number(row.total_acceleration ?? row.mpu6050?.totalAcceleration ?? 9.81);
@@ -223,8 +424,16 @@ export class TelemetryService {
       safetyStatus = 'SENSOR_FAULT';
     }
 
-    const packet: HelmetTelemetryPacket = {
-      packetId: row.id || row.packetId || `PKT-${helmetId}-${Date.now()}`,
+    const packetId = row.id || row.packetId || `PKT-${helmetId}-${Date.now()}`;
+    const isSimulated = Boolean(
+      row.is_simulated ||
+      row.isSimulated ||
+      (typeof packetId === 'string' && packetId.includes('-SIM-')) ||
+      row.telemetrySource === 'SIMULATION'
+    );
+
+    return {
+      packetId,
       helmetId,
       timestamp: row.timestamp || new Date().toISOString(),
       sequenceNumber: Number(row.sequence_number ?? row.sequenceNumber ?? 0),
@@ -251,13 +460,30 @@ export class TelemetryService {
         redLed: safetyStatus !== 'SAFE',
         buzzer: safetyStatus === 'DANGER',
       },
-      rssi: -65,
-      batteryVolts: 4.1,
+      rssi: row.rssi !== undefined ? Number(row.rssi) : -65,
+      batteryVolts: row.battery_volts !== undefined ? Number(row.battery_volts) : 4.1,
+      isSimulated,
+      telemetrySource: isSimulated ? 'SIMULATION' : 'DATABASE',
     };
+  }
 
-    this.latestPackets.set(helmetId, packet);
-    this.lastSeenTimestamps.set(helmetId, Date.now());
-    this.connectivityStates.set(helmetId, 'ONLINE');
+  public updateAuthoritativeSafetyState(helmetId: string, packet: HelmetTelemetryPacket): void {
+    const isSos = packet.sosPressed;
+    const isFall = packet.fallDetected;
+    const totalAccel = packet.mpu6050.totalAcceleration;
+    const gasVal = packet.mq2.rawGasValue;
+    const tempVal = packet.dht22.temperature;
+    const dhtValid = packet.sensorHealth.dht22;
+    const mpuValid = packet.sensorHealth.mpu6050;
+    const isSensorFault = !dhtValid || !mpuValid;
+
+    const derivedStatus: SafetyStatus = (isSos || (mpuValid && (isFall || totalAccel > 15)))
+      ? 'DANGER'
+      : (gasVal > 800 || (dhtValid && tempVal > 40))
+      ? 'WARNING'
+      : isSensorFault
+      ? 'SENSOR_FAULT'
+      : 'SAFE';
 
     // Check for active unresolved alerts for this helmet
     const activeAlertsForHelmet = this.alerts.filter((a) => a.helmetId === helmetId && !a.resolved);
@@ -272,15 +498,14 @@ export class TelemetryService {
     );
 
     const effectiveStatus: SafetyStatus =
-      safetyStatus === 'DANGER' || hasActiveCritical
+      derivedStatus === 'DANGER' || hasActiveCritical
         ? 'DANGER'
-        : safetyStatus === 'WARNING' || hasActiveWarning
+        : derivedStatus === 'WARNING' || hasActiveWarning
         ? 'WARNING'
-        : safetyStatus === 'SENSOR_FAULT' || isSensorFault || hasActiveSensorFault
+        : derivedStatus === 'SENSOR_FAULT' || isSensorFault || hasActiveSensorFault
         ? 'SENSOR_FAULT'
         : 'SAFE';
 
-    // Update authoritative safety state
     this.safetyStates.set(helmetId, {
       status: effectiveStatus,
       primaryTrigger:
@@ -310,54 +535,43 @@ export class TelemetryService {
       },
       isPrototypeNotice: true,
     });
+  }
 
-    // Update rolling history buffer (100 points)
-    const history = this.telemetryHistories.get(helmetId) || [];
-    const dateObj = new Date(row.timestamp);
-    const timeFormatted = dateObj.toTimeString().split(' ')[0];
-
-    const historyPoint: TelemetryHistoryPoint = {
-      timestamp: row.timestamp,
-      timeFormatted,
-      temperature: Number(row.temperature),
-      humidity: Number(row.humidity),
-      rawGasValue: Number(row.gas_value),
-      totalAcceleration: Number(row.total_acceleration),
-      accelX: Number(row.acceleration_x),
-      accelY: Number(row.acceleration_y),
-      accelZ: Number(row.acceleration_z),
-      gyroX: Number(row.gyro_x),
-      gyroY: Number(row.gyro_y),
-      gyroZ: Number(row.gyro_z),
-      sosPressed: Boolean(row.sos_pressed),
-      fallDetected: Boolean(row.fall_detected),
-    };
-
-    history.push(historyPoint);
-    if (history.length > 100) {
-      history.shift();
-    }
-    this.telemetryHistories.set(helmetId, history);
-
-    // Update authoritative last telemetry time for dashboard
-    this.lastTelemetryTime = timeFormatted;
-
-    this.notifyListeners();
+  public evaluatePacketConnectivity(lastSeenIso: string, nowMs: number = Date.now()): ConnectivityStatus {
+    const lastSeenMs = Date.parse(lastSeenIso);
+    if (isNaN(lastSeenMs)) return 'OFFLINE';
+    const diff = nowMs - lastSeenMs;
+    if (diff < 4000) return 'ONLINE';
+    if (diff <= 8000) return 'STALE';
+    return 'OFFLINE';
   }
 
   private handleRealtimeHelmet(row: DbHelmet | any): void {
     const helmetId = row.id || row.helmet_code || row.helmetId;
     if (!helmetId) return;
-    const isOnline = Boolean(row.online !== undefined ? row.online : row.is_online ?? true);
 
-    this.connectivityStates.set(helmetId, isOnline ? 'ONLINE' : 'OFFLINE');
+    // Track helmet in list if new
+    const existingIdx = this.dbHelmetsList.findIndex(h => h.id === helmetId);
+    if (existingIdx >= 0) {
+      this.dbHelmetsList[existingIdx] = { ...this.dbHelmetsList[existingIdx], ...row };
+    } else if (row.id) {
+      this.dbHelmetsList.push(row);
+    }
+
+    const isOnline = Boolean(row.online !== undefined ? row.online : row.is_online ?? false);
+    const lastSeenConn = row.last_seen ? this.evaluatePacketConnectivity(row.last_seen, Date.now()) : 'OFFLINE';
+    const effectiveConn: ConnectivityStatus = isOnline ? lastSeenConn : 'OFFLINE';
+
+    this.connectivityStates.set(helmetId, effectiveConn);
 
     const existingSafety = this.safetyStates.get(helmetId);
     if (existingSafety) {
-      existingSafety.status = row.status;
+      if (row.status) {
+        existingSafety.status = row.status;
+      }
     } else {
       this.safetyStates.set(helmetId, {
-        status: row.status,
+        status: row.status || 'SAFE',
         primaryTrigger: 'NOMINAL',
         triggerDetails: [],
         outputs: {
@@ -365,7 +579,7 @@ export class TelemetryService {
           redLed: row.status === 'DANGER',
           buzzer: row.status === 'DANGER',
         },
-        isPrototypeNotice: true,
+        isPrototypeNotice: false,
       });
     }
 
@@ -457,8 +671,7 @@ export class TelemetryService {
 
   public getLastTelemetryTime(): string {
     if (this.lastTelemetryTime) return this.lastTelemetryTime;
-    const now = new Date();
-    return now.toTimeString().split(' ')[0];
+    return 'No data recorded';
   }
 
   public getZoneProvider(): ZoneAssignmentProvider {
@@ -490,33 +703,65 @@ export class TelemetryService {
 
   public getHelmets(): HelmetDevice[] {
     const registeredIds = this.provider.getRegisteredHelmetIds();
+    const allIds = new Set<string>([
+      ...this.dbHelmetsList.map((h) => h.id),
+      ...registeredIds,
+    ]);
 
-    return registeredIds.map((id) => {
-      const telemetry = this.latestPackets.get(id) || this.createPlaceholderPacket(id);
-      const safety: SafetyEvaluationResult = this.safetyStates.get(id) || {
-        status: 'SAFE',
+    return Array.from(allIds).map((id) => {
+      const dbHelmet = this.dbHelmetsList.find((h) => h.id === id);
+      const telemetry = this.latestPackets.get(id) || null;
+      const hasData = telemetry !== null;
+      const dataLoadingState = this.helmetDataLoadingStates.get(id) || 'IDLE';
+      const errorMessage = this.helmetErrorStates.get(id) || null;
+
+      // Connectivity status
+      let connectivity: ConnectivityStatus = this.connectivityStates.get(id) || 'OFFLINE';
+      const isDbOffline = dbHelmet && (dbHelmet.online === false || (dbHelmet as any).is_online === false);
+      if (isDbOffline) {
+        connectivity = 'OFFLINE';
+      } else if (telemetry) {
+        connectivity = this.evaluatePacketConnectivity(telemetry.timestamp, Date.now());
+      } else if (dbHelmet?.last_seen) {
+        connectivity = this.evaluatePacketConnectivity(dbHelmet.last_seen, Date.now());
+      } else {
+        connectivity = 'OFFLINE';
+      }
+      this.connectivityStates.set(id, connectivity);
+
+      // Safety status
+      const existingSafety = this.safetyStates.get(id);
+      let safety: SafetyEvaluationResult = existingSafety || {
+        status: (dbHelmet?.status as SafetyStatus) || 'SAFE',
         primaryTrigger: 'NOMINAL',
-        triggerDetails: [],
-        outputs: { greenLed: true, redLed: false, buzzer: false },
-        isPrototypeNotice: true,
+        triggerDetails: hasData ? ['All parameters normal'] : ['No telemetry recorded'],
+        outputs: { greenLed: false, redLed: false, buzzer: false },
+        isPrototypeNotice: false,
       };
-      const connectivity = this.connectivityStates.get(id) || 'ONLINE';
+
       const worker = this.zoneProvider.getWorkerByHelmetId(id);
       const currentWorkZone = worker?.currentWorkZone ?? null;
       const assignedZone = worker?.assignedZone || 'Portal / Surface';
+      const lastHeartbeat = telemetry?.timestamp || dbHelmet?.last_seen || '';
+
+      const isSimulated = Boolean(telemetry?.isSimulated || telemetry?.packetId?.includes('-SIM-'));
 
       return {
         helmetId: id,
         serialNumber: `SN-MC8266-${id.replace('MC-', '00')}`,
         firmwareVersion: 'v1.4.2-proto',
-        assignedWorkerId: worker?.workerId || null,
+        assignedWorkerId: worker?.workerId || dbHelmet?.worker_id || null,
         assignedShaft: currentWorkZone || 'Checked Out',
         assignedZone,
         currentWorkZone,
         connectivity,
-        lastHeartbeat: telemetry.timestamp,
+        lastHeartbeat,
         telemetry,
         safety,
+        hasData,
+        dataLoadingState,
+        errorMessage,
+        telemetrySource: telemetry ? (isSimulated ? 'SIMULATION' : 'DATABASE') : 'NO_DATA',
       };
     });
   }
@@ -588,7 +833,11 @@ export class TelemetryService {
     const response = await simulationService.runScenario(scenario, targetHelmetId);
     if (response) {
       if (response.telemetry) {
-        this.handleRealtimeTelemetry(response.telemetry);
+        this.handleRealtimeTelemetry({
+          ...response.telemetry,
+          isSimulated: true,
+          telemetrySource: 'SIMULATION',
+        });
       }
       if (response.helmet) {
         this.handleRealtimeHelmet(response.helmet);
@@ -629,31 +878,5 @@ export class TelemetryService {
 
   public getProvider(): ITelemetryProvider {
     return this.provider;
-  }
-
-  private createPlaceholderPacket(helmetId: string): HelmetTelemetryPacket {
-    return {
-      packetId: `PKT-${helmetId}-INIT`,
-      helmetId,
-      timestamp: new Date().toISOString(),
-      sequenceNumber: 0,
-      dht22: { temperature: 26.5, humidity: 60.0 },
-      mq2: { rawGasValue: 220 },
-      mpu6050: {
-        accelX: 0,
-        accelY: 0,
-        accelZ: 9.81,
-        totalAcceleration: 9.81,
-        gyroX: 0,
-        gyroY: 0,
-        gyroZ: 0,
-      },
-      sosPressed: false,
-      fallDetected: false,
-      sensorHealth: { dht22: true, mq2: true, mpu6050: true },
-      outputs: { greenLed: true, redLed: false, buzzer: false },
-      rssi: -65,
-      batteryVolts: 4.1,
-    };
   }
 }

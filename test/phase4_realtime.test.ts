@@ -280,14 +280,16 @@ async function runPhase4Tests() {
   });
   assert(recEval.status === 'SAFE', 'SIMULATION', 'Normalized sensor values return status to SAFE');
 
-  AlertEngine.processAlerts(
+  const procResult = AlertEngine.processAlerts(
     recoveryAlertsStore,
     'MC-001',
     'WRK-001',
     { packetId: 'P-REC', helmetId: 'MC-001', timestamp: new Date().toISOString(), sequenceNumber: 1, temperature: 26.5, humidity: 55, gasValue: 220, accelX: 0, accelY: 0, accelZ: 9.8, totalAcceleration: 9.8, gyroX: 0, gyroY: 0, gyroZ: 0, fallDetected: false, sosPressed: false, batteryVolts: 4.1, rssi: -65 },
     recEval
   );
-  assert(recoveryAlertsStore[0].status === 'RESOLVED', 'SIMULATION', 'Environmental alert auto-resolved upon SAFE recovery');
+  assert(procResult.resolvedAlerts.length === 0, 'SIMULATION', 'Hazard alert persists until supervisor resolution');
+  AlertEngine.resolve(recoveryAlertsStore, recoveryAlertsStore[0].id, 'Shift Supervisor', 'Conditions normalized');
+  assert(recoveryAlertsStore[0].status === 'RESOLVED', 'SIMULATION', 'Hazard alert resolved by supervisor');
 
   // 8. OFFLINE SCENARIO
   provider.triggerScenario('HELMET_OFFLINE', 'MC-001');

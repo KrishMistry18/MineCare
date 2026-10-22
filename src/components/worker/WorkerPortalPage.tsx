@@ -234,7 +234,7 @@ export const WorkerPortalPage: React.FC = () => {
                   <Thermometer className="w-3.5 h-3.5 text-amber-400" />
                 </div>
                 <div className="text-lg font-mono font-bold text-white">
-                  {myHelmet?.telemetry?.dht22?.temperature ? myHelmet.telemetry.dht22.temperature.toFixed(1) : '24.5'}°C
+                  {myHelmet?.telemetry?.dht22?.temperature !== undefined ? `${myHelmet.telemetry.dht22.temperature.toFixed(1)}°C` : '--'}
                 </div>
                 <div className="text-[10px] text-slate-500">Threshold: &lt;40°C</div>
               </div>
@@ -245,7 +245,7 @@ export const WorkerPortalPage: React.FC = () => {
                   <Wind className="w-3.5 h-3.5 text-cyan-400" />
                 </div>
                 <div className="text-lg font-mono font-bold text-white">
-                  {myHelmet?.telemetry?.mq2?.rawGasValue ?? '180'} <span className="text-xs font-normal text-slate-400">ADC</span>
+                  {myHelmet?.telemetry?.mq2?.rawGasValue !== undefined ? `${myHelmet.telemetry.mq2.rawGasValue} ADC` : '--'}
                 </div>
                 <div className="text-[10px] text-slate-500">Threshold: &lt;800 ADC</div>
               </div>
@@ -256,7 +256,7 @@ export const WorkerPortalPage: React.FC = () => {
                   <Activity className="w-3.5 h-3.5 text-purple-400" />
                 </div>
                 <div className="text-lg font-mono font-bold text-white">
-                  {myHelmet?.telemetry?.mpu6050?.totalAcceleration ? `${myHelmet.telemetry.mpu6050.totalAcceleration.toFixed(1)} m/s²` : '9.8 m/s²'}
+                  {myHelmet?.telemetry?.mpu6050?.totalAcceleration !== undefined ? `${myHelmet.telemetry.mpu6050.totalAcceleration.toFixed(1)} m/s²` : '--'}
                 </div>
                 <div className="text-[10px] text-slate-500">Fall alert: &gt;15.0 m/s²</div>
               </div>
