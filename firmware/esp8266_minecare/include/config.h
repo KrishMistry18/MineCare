@@ -37,6 +37,15 @@
 #endif
 
 // =============================================================================
+// DEMO / BENCH-TEST MODE (COMPILE-TIME SWITCH)
+// =============================================================================
+// When defined, bench mode executes simulated safety states for classroom/lab
+// demonstrations without exposing physical hardware to hazardous conditions.
+// Production safety thresholds remain identical and unchanged.
+// STRICT REQUIREMENT: Disabled by default for all production deployments.
+#undef MINECARE_DEMO_BENCH_MODE
+
+// =============================================================================
 // GPIO PIN ASSIGNMENTS (NodeMCU ESP-12E)
 // =============================================================================
 #define PIN_LED_GREEN        16  // D0 (GPIO16) - Nominal status indicator (Active HIGH)

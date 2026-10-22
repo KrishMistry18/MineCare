@@ -92,6 +92,7 @@ export class AlertEngine {
         mpuValid: telemetry.mpuValid,
         sensorFault: telemetry.dhtValid === false || telemetry.mpuValid === false,
       },
+      is_simulated: Boolean(telemetry.isSimulated),
       created_at: now,
       updated_at: now,
     };

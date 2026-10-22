@@ -135,6 +135,11 @@ void setup() {
     // Initialize NTP
     timeMgr.begin();
 
+#ifdef MINECARE_DEMO_BENCH_MODE
+    Serial.println("[DEMO_MODE] !!! WARNING: FIRMWARE COMPILED IN DEMO BENCH TEST MODE !!!");
+    Serial.println("[DEMO_MODE] Telemetry packets tagged as test-generated. Physical safety certified mode inactive.");
+#endif
+
     Serial.println("[INIT] Firmware initialization complete. Starting monitor loop.");
 }
 
@@ -149,6 +154,20 @@ void loop() {
         lastSensorPollMs = now;
 
         SensorReadings readings = sensorMgr.readAll();
+
+#ifdef MINECARE_DEMO_BENCH_MODE
+        static unsigned long lastDemoCycleMs = 0;
+        static uint8_t demoState = 0;
+        if (now - lastDemoCycleMs >= 15000) {
+            lastDemoCycleMs = now;
+            demoState = (demoState + 1) % 5;
+        }
+        if (demoState == 1) readings.rawGasValue = 920;      // Simulated High Gas (> 800)
+        else if (demoState == 2) readings.temperature = 43.0f; // Simulated High Temp (> 40.0°C)
+        else if (demoState == 3) { readings.totalAcceleration = 22.0f; readings.fallDetected = true; } // Simulated Fall (> 15 m/s²)
+        else if (demoState == 4) readings.sosPressed = true; // Simulated SOS
+#endif
+
         currentSafety = SafetyLogic::evaluate(readings);
 
         // Immediate autonomous actuator control (zero dependency on network latency)

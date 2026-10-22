@@ -149,6 +149,7 @@ export interface DbTelemetry {
   dht_valid?: boolean;
   mpu_valid?: boolean;
   safety_status: SafetyStatus;
+  is_simulated?: boolean;
   created_at: string;
 }
 
@@ -165,6 +166,7 @@ export interface DbAlert {
   acknowledged_by: string | null;
   resolved_at: string | null;
   supervisor_notes: string | null;
+  is_simulated?: boolean;
   readings_snapshot?: {
     temperature: number;
     humidity: number;
@@ -229,6 +231,8 @@ export interface TelemetryIngestPayload {
   humidityValid?: boolean;
   batteryVolts?: number;
   rssi?: number;
+  isSimulated?: boolean;
+  is_simulated?: boolean;
 }
 
 export interface ValidatedTelemetryPacket {
@@ -254,6 +258,7 @@ export interface ValidatedTelemetryPacket {
   humidityValid?: boolean;
   batteryVolts: number;
   rssi: number;
+  isSimulated?: boolean;
 }
 
 export interface SystemHealthStatus {

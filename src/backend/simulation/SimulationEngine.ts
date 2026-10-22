@@ -170,6 +170,7 @@ export class SimulationEngine {
       sosPressed,
       batteryVolts: 4.1,
       rssi: -65,
+      isSimulated: true,
     };
   }
 }

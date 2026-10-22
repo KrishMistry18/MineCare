@@ -264,6 +264,23 @@ export class PostgresRateLimitStore implements IRateLimitStore {
     );
   }
 
+  private static keyLocks: Map<string, Promise<void>> = new Map();
+
+  private async acquireKeyLock(key: string): Promise<() => void> {
+    while (PostgresRateLimitStore.keyLocks.has(key)) {
+      await PostgresRateLimitStore.keyLocks.get(key);
+    }
+    let resolveLock!: () => void;
+    const lockPromise = new Promise<void>((resolve) => {
+      resolveLock = resolve;
+    });
+    PostgresRateLimitStore.keyLocks.set(key, lockPromise);
+    return () => {
+      PostgresRateLimitStore.keyLocks.delete(key);
+      resolveLock();
+    };
+  }
+
   public async checkAndRecord(
     category: 'AUTH' | 'TELEMETRY' | 'GENERAL' | 'ADMIN',
     identifier: string,
@@ -271,10 +288,12 @@ export class PostgresRateLimitStore implements IRateLimitStore {
   ): Promise<RateLimitResult> {
     await this.ensureTable();
     const key = `${category}:${identifier}`;
+    const releaseLock = await this.acquireKeyLock(key);
 
-    return connectionManager.withTransaction(async (client) => {
-      // 1. Authoritative PostgreSQL clock (ensures multi-instance synchronization)
-      let now = Date.now();
+    try {
+      return await connectionManager.withTransaction(async (client) => {
+        // 1. Authoritative PostgreSQL clock (ensures multi-instance synchronization)
+        let now = Date.now();
       try {
         const clockRes = await client.query<{ now_ms: string | number }>(
           'SELECT FLOOR(EXTRACT(EPOCH FROM NOW()) * 1000)::bigint AS now_ms'
@@ -372,13 +391,16 @@ export class PostgresRateLimitStore implements IRateLimitStore {
       const oldest = timestamps[0];
       const resetSeconds = Math.max(1, Math.ceil((oldest + policy.windowMs - now) / 1000));
 
-      return {
-        allowed: true,
-        limit: policy.maxRequests,
-        remaining,
-        resetSeconds,
-      };
-    });
+        return {
+          allowed: true,
+          limit: policy.maxRequests,
+          remaining,
+          resetSeconds,
+        };
+      });
+    } finally {
+      releaseLock();
+    }
   }
 
   public async delete(key: string): Promise<void> {

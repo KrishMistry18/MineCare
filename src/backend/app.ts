@@ -574,6 +574,7 @@ export class BackendApp {
           dht_valid: packet.dhtValid,
           mpu_valid: packet.mpuValid,
           safety_status: safety.status,
+          is_simulated: packet.isSimulated ?? false,
           created_at: new Date().toISOString(),
         };
 
@@ -665,7 +666,8 @@ export class BackendApp {
           helmetStatus: effectiveHelmetStatus,
           hasActiveAlerts: activeHelmetAlerts.length > 0,
           safety: {
-            status: effectiveHelmetStatus,
+            status: safety.status,
+            effectiveStatus: effectiveHelmetStatus,
             primaryTrigger: safety.primaryTrigger,
             triggerDetails: safety.triggerDetails,
             outputs: {
@@ -780,6 +782,21 @@ export class BackendApp {
             online: false,
           });
           return true;
+        }
+
+        // 3.1 Handle RECOVERY simulation scenario (Authoritative Supervisor Simulation Recovery)
+        if (scenario === 'RECOVERY') {
+          const alertsToResolve = (await this.db.getActiveAlerts()).filter((a) => a.helmet_id === helmetId);
+          for (const a of alertsToResolve) {
+            await this.db.resolveAlert(a.id, `Simulated recovery authorized by ${currentUser.role}`);
+            RealtimePublisher.getInstance().publish('alerts', 'UPDATE', {
+              ...a,
+              status: 'RESOLVED',
+              resolved_at: new Date().toISOString(),
+              supervisor_notes: `Simulated recovery authorized by ${currentUser.role}`,
+            });
+          }
+          await this.db.updateHelmet(helmetId, { status: 'SAFE' });
         }
 
         // 4. Generate Telemetry Packet Server-Side

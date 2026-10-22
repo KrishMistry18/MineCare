@@ -187,6 +187,7 @@ export class TelemetryValidator {
       humidityValid,
       batteryVolts: Number((data.batteryVolts ?? 4.1).toFixed(2)),
       rssi: Number((data.rssi ?? -65).toFixed(0)),
+      isSimulated: Boolean(data.isSimulated || data.is_simulated || false),
     };
 
     return { isValid: true, errors: [], packet: validated };

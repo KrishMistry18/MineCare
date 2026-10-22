@@ -303,7 +303,15 @@ async function runPhase6Tests() {
 
   assert(recRes.status === 201, 'SCENARIO_7', 'RECOVERY packet accepted with 201');
   assert(recRes.data.safety.status === 'SAFE', 'SCENARIO_7', 'Evaluates to SAFE status');
-  assert(recRes.data.alertsResolvedCount >= 1, 'SCENARIO_7', 'Active environmental gas hazard auto-resolved');
+  
+  // Authoritative alert lifecycle: Hazard alerts persist until manual supervisor resolution
+  const activeGasAlert = db.getAlerts().find((a) => a.helmet_id === 'MC-002' && a.type === 'GAS_HAZARD' && a.status === 'TRIGGERED');
+  if (activeGasAlert) {
+    const resolveRes = await mockApi(`/api/v1/alerts/${activeGasAlert.id}/resolve`, 'POST', {
+      supervisorNotes: 'Gas cleared, nominal baseline verified',
+    }, supToken);
+    assert(resolveRes.status === 200, 'SCENARIO_7', 'Active environmental gas hazard resolved by supervisor');
+  }
   const resolvedGasAlert = db.getAlerts().find((a) => a.helmet_id === 'MC-002' && a.type === 'GAS_HAZARD');
   assert(resolvedGasAlert?.status === 'RESOLVED', 'SCENARIO_7', 'Gas alert marked RESOLVED in database');
   assert(Boolean(resolvedGasAlert?.resolved_at), 'SCENARIO_7', 'Gas alert resolved_at timestamp populated');
@@ -430,6 +438,11 @@ async function runPhase6Tests() {
   // MC-002 -> HIGH GAS (WARNING)
   // MC-003 -> FALL (DANGER)
   // MC-004 -> OFFLINE
+  const mc1Alerts = db.getAlerts().filter((a) => a.helmet_id === 'MC-001' && a.status === 'TRIGGERED');
+  for (const a of mc1Alerts) {
+    await mockApi(`/api/v1/alerts/${a.id}/resolve`, 'POST', { supervisorNotes: 'Pre-isolation test clear' }, supToken);
+  }
+
   await mockApi('/api/v1/telemetry', 'POST', {
     packetId: `PKT-MC001-ISO-${Date.now()}`,
     helmetId: 'MC-001',
@@ -686,6 +699,15 @@ async function runPhase6Tests() {
     });
     assert(res.status === 201, 'SEQUENCE', `Step ${idx + 1} (${s.name}) accepted`);
     assert(res.data.safety.status === s.expStatus, 'SEQUENCE', `Step ${idx + 1} (${s.name}) evaluated to ${s.expStatus}`);
+
+    if (s.name.startsWith('RECOVERY')) {
+      const activeAlerts = db.getAlerts().filter((a) => a.helmet_id === testHelmet && a.status === 'TRIGGERED');
+      for (const a of activeAlerts) {
+        await mockApi(`/api/v1/alerts/${a.id}/resolve`, 'POST', {
+          supervisorNotes: `Resolved after ${s.name}`,
+        }, supToken);
+      }
+    }
   }
 
   // Verify that all 9 packets were persisted

@@ -569,7 +569,7 @@ async function runPhase10Tests() {
   });
   assert(safeRecoveryEval.status === 'SAFE', 'ALERT_RECOVERY', 'Normal gas reading 220 evaluates to SAFE');
 
-  AlertEngine.processAlerts(
+  const recProcResult = AlertEngine.processAlerts(
     alertStore,
     'MC-001',
     'WRK-001',
@@ -596,7 +596,9 @@ async function runPhase10Tests() {
     safeRecoveryEval
   );
 
-  assert(alertStore[0].status === 'RESOLVED', 'ALERT_RECOVERY', 'Active hazard alert automatically transitioned to RESOLVED on SAFE recovery');
+  assert(recProcResult.resolvedAlerts.length === 0, 'ALERT_RECOVERY', 'Hazard alert persists until supervisor resolution');
+  AlertEngine.resolve(alertStore, alertStore[0].id, 'Shift Supervisor', 'Conditions normalized to safe baseline');
+  assert(alertStore[0].status === 'RESOLVED', 'ALERT_RECOVERY', 'Active hazard alert transitioned to RESOLVED by supervisor');
   assert(alertStore[0].resolved_at !== undefined, 'ALERT_RECOVERY', 'Alert resolved_at timestamp populated');
 
   // =========================================================================

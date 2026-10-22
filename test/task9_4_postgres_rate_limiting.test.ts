@@ -234,10 +234,14 @@ async function runTask94Tests() {
   assert(loginSpoofRes.status === 401, 'IDENTITY_SECURITY', 'Request with SQL injection header safely handled without SQL error');
 
   // Verify rate_limits table was not dropped
-  const tableCheck = await connectionManager.query(
-    "SELECT table_name FROM information_schema.tables WHERE table_name = 'rate_limits'"
-  );
-  assert(tableCheck.rows.length === 1, 'IDENTITY_SECURITY', 'rate_limits table remains intact after injection attempt');
+  let tableIntact = false;
+  try {
+    const tableCheck = await connectionManager.query("SELECT 1 FROM rate_limits LIMIT 1");
+    tableIntact = Array.isArray(tableCheck.rows);
+  } catch {
+    tableIntact = false;
+  }
+  assert(tableIntact, 'IDENTITY_SECURITY', 'rate_limits table remains intact after injection attempt');
 
   // IPv6-mapped IPv4 normalization (::ffff:192.168.1.50)
   const ipv6Mapped = '::ffff:192.168.1.50';
