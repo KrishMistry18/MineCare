@@ -32,6 +32,10 @@ function backendApiPlugin(): Plugin {
 export default defineConfig(({ command }) => {
   const isBuild = command === 'build';
   return {
+    server: {
+      host: '0.0.0.0',
+      port: 5173,
+    },
     define: isBuild
       ? {
           'import.meta.env.DEV': 'false',

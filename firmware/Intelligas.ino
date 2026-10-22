@@ -42,14 +42,20 @@ LIFECYCLE BEHAVIOR:
 // ==================================================
 // 1. WI-FI & CLOUD CONFIGURATION
 // ==================================================
-// --> Enter your Wi-Fi network credentials here:
+// --> Enter your Wi-Fi network credentials here (must match the Wi-Fi your laptop/PC is on):
 const char* WIFI_SSID     = "YOUR_WIFI_NAME";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
-// Cloud Endpoint & Device Token
-const char* BACKEND_URL   = "https://minecare-backend.onrender.com/api/v1/telemetry";
+// --> Backend Telemetry Endpoint:
+// OPTION A (Recommended for Local Dev): Direct connection to your PC running 'npm run dev':
+// (Your PC's IP on your Wi-Fi network is 192.168.1.2, port 5173)
+const char* BACKEND_URL   = "http://192.168.1.2:5173/api/v1/telemetry";
+
+// OPTION B (Cloud Render Deployment):
+// const char* BACKEND_URL = "https://minecare-backend.onrender.com/api/v1/telemetry";
+
 const char* HELMET_ID     = "MC-001";
-const char* DEVICE_TOKEN  = "mc_dev_MC-001"; // Pre-authorized on backend
+const char* DEVICE_TOKEN  = "mc_dev_MC-001"; // Pre-authorized dev token on backend
 
 // Transmission Interval (2000ms nominal)
 const unsigned long TELEMETRY_INTERVAL_MS = 2000;
@@ -166,13 +172,26 @@ void sendTelemetryToCloud(
     WiFi.RSSI()
   );
 
-  // Setup TLS Client (Insecure mode skips heavy CA certificate bundle for ESP8266 RAM)
-  WiFiClientSecure secureClient;
-  secureClient.setInsecure();
-  secureClient.setTimeout(4500);
-
   HTTPClient http;
-  if (http.begin(secureClient, BACKEND_URL)) {
+  http.setTimeout(4500);
+
+  String url = String(BACKEND_URL);
+  bool isHttps = url.startsWith("https://");
+  bool beginOk = false;
+
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+
+  if (isHttps) {
+    secureClient.setInsecure();
+    secureClient.setTimeout(4500);
+    beginOk = http.begin(secureClient, url);
+  } else {
+    plainClient.setTimeout(4500);
+    beginOk = http.begin(plainClient, url);
+  }
+
+  if (beginOk) {
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Device-Token", DEVICE_TOKEN);
 
@@ -210,7 +229,7 @@ void sendTelemetryToCloud(
     }
     http.end();
   } else {
-    Serial.println("[CLOUD] HTTPS connection initiation failed.");
+    Serial.printf("[CLOUD] Connection initiation failed to: %s\n", BACKEND_URL);
   }
 }
 
@@ -256,6 +275,15 @@ void setup() {
   }
 
   // ---------- Wi-Fi ----------
+  if (strcmp(WIFI_SSID, "YOUR_WIFI_NAME") == 0) {
+    Serial.println("----------------------------------------------------------------");
+    Serial.println("[CONFIGURATION REQUIRED] Please update WIFI_SSID & WIFI_PASSWORD");
+    Serial.println("in Intelligas.ino with your actual Wi-Fi network credentials!");
+    Serial.println("----------------------------------------------------------------");
+  }
+  Serial.printf("[INIT] Target Backend: %s\n", BACKEND_URL);
+  Serial.printf("[INIT] Helmet ID:      %s\n", HELMET_ID);
+
   connectWiFi();
 
   Serial.println("========================================");
