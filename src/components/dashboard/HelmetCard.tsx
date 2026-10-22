@@ -24,13 +24,13 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
   const worker = workers.find(w => w.assignedHelmetId === helmet.helmetId);
   const { telemetry, safety, connectivity, hasData, dataLoadingState } = helmet;
 
-  const isDanger = safety.status === 'DANGER';
-  const isWarning = safety.status === 'WARNING';
-  const isSensorFault = safety.status === 'SENSOR_FAULT';
   const isOffline = connectivity === 'OFFLINE';
   const isStale = connectivity === 'STALE';
+  const isDanger = !isOffline && safety.status === 'DANGER';
+  const isWarning = !isOffline && safety.status === 'WARNING';
+  const isSensorFault = !isOffline && safety.status === 'SENSOR_FAULT';
   const isError = dataLoadingState === 'ERROR';
-  const isNoData = !hasData || !telemetry;
+  const isNoData = !hasData || !telemetry || isOffline;
   const isSimulated = Boolean(telemetry?.isSimulated || helmet.telemetrySource === 'SIMULATION');
 
   const dhtHealthy = telemetry?.sensorHealth ? telemetry.sensorHealth.dht22 : true;
@@ -42,12 +42,14 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
     <div
       onClick={() => onClick && onClick(helmet.helmetId)}
       className={`bg-[#0c131f] border rounded-xl p-4 space-y-3.5 transition-all duration-150 cursor-pointer ${
-        isDanger
+        isOffline || isNoData
+          ? 'border-[#182335] opacity-75 hover:opacity-100 hover:border-[#283850]'
+          : isDanger
           ? 'border-red-500/70 bg-red-950/10 shadow-[0_0_15px_rgba(239,68,68,0.1)]'
           : isWarning || isSensorFault
           ? 'border-amber-500/60 bg-amber-950/10'
-          : isOffline || isNoData
-          ? 'border-[#182335] opacity-90'
+          : isStale
+          ? 'border-amber-500/40 bg-amber-950/5'
           : 'border-[#182335] hover:border-[#283850]'
       }`}
     >
@@ -75,6 +77,11 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
               <span>•</span>
               <span>API ERROR</span>
             </span>
+          ) : isOffline ? (
+            <span className="bg-[#18202c] border border-[#2b394e] text-slate-400 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
+              <span>•</span>
+              <span>OFFLINE</span>
+            </span>
           ) : isNoData ? (
             <span className="bg-[#18202c] border border-[#2b394e] text-slate-400 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
               <span>•</span>
@@ -94,11 +101,6 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
             <span className="bg-[#291b07] border border-[#d97706] text-[#fbbf24] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
               <span>•</span>
               <span>SENSOR FAULT</span>
-            </span>
-          ) : isOffline ? (
-            <span className="bg-[#18202c] border border-[#2b394e] text-slate-400 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
-              <span>•</span>
-              <span>OFFLINE</span>
             </span>
           ) : isStale ? (
             <span className="bg-[#291b07] border border-[#78350f] text-[#fbbf24] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">

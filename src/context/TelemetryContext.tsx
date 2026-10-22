@@ -105,9 +105,9 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   }, [service, zoneProvider]);
 
-  // Audio alarm handling when any helmet is in DANGER status
-  const dangerHelmets = helmets.filter((h) => h.safety.status === 'DANGER');
-  const warningHelmets = helmets.filter((h) => h.safety.status === 'WARNING');
+  // Audio alarm handling & active emergency counts (only for active reporting helmets, not offline helmets)
+  const dangerHelmets = helmets.filter((h) => h.safety.status === 'DANGER' && h.connectivity !== 'OFFLINE');
+  const warningHelmets = helmets.filter((h) => h.safety.status === 'WARNING' && h.connectivity !== 'OFFLINE');
 
   useEffect(() => {
     if (dangerHelmets.length > 0 && !audioMuted) {

@@ -43,16 +43,19 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
   // Active alerts that are unresolved
   const activeAlertsList = alerts.filter(a => !a.resolved);
 
-  // Sort helmets by severity: DANGER (0), WARNING (1), SENSOR_FAULT (2), STALE (3), OFFLINE (4), NO DATA (5), SAFE (6)
+  // Sort helmets: active reporting helmets first (ordered by severity), followed by offline/no-data helmets
   const sortedHelmets = [...helmets].sort((a, b) => {
     const getScore = (h: typeof a) => {
+      // Offline and empty helmets always sort behind active reporting nodes
+      if (h.connectivity === 'OFFLINE') return 10;
+      if (!h.hasData || !h.telemetry) return 11;
+
+      // Active reporting helmets sorted by severity
       if (h.safety.status === 'DANGER') return 0;
       if (h.safety.status === 'WARNING') return 1;
       if (h.safety.status === 'SENSOR_FAULT') return 2;
       if (h.connectivity === 'STALE') return 3;
-      if (h.connectivity === 'OFFLINE') return 4;
-      if (!h.hasData || !h.telemetry) return 5;
-      return 6;
+      return 4; // Online SAFE
     };
     return getScore(a) - getScore(b);
   });
