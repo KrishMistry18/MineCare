@@ -90,7 +90,8 @@ const float THRESHOLD_GYRO_SHAKE_RADS  = 5.0;  // rad/s (~290 deg/sec)
 #define DHTPIN          D2
 #define DHTTYPE         DHT22
 #define MQ2_AO          A0
-#define SOS_BUTTON_PIN  D1    // SOS button pin (One leg to D1, other leg to GND)
+#define SOS_BUTTON_PIN1 D1    // Primary SOS button pin (GPIO5)
+#define SOS_BUTTON_PIN2 D5    // Alternate SOS button pin (GPIO14)
 #define MPU_SDA         D6
 #define MPU_SCL         D7
 
@@ -109,10 +110,15 @@ unsigned long sequenceNumber      = 0;
 bool mpuAvailable                 = false;
 
 // Alert Lifecycle Tracking
-bool sosTriggerPending            = false; // Set when button is pressed, cleared once cloud receives it
-bool fallTriggerPending           = false; // Latches peak fall/shake event across 2000ms window
+volatile bool sosTriggerPending   = false; // Set when button is pressed, cleared once cloud receives it
+bool fallTriggerPending           = false; // Latches peak fall/shake event across window
 bool cloudAlertActive             = false; // Kept true as long as cloud reports active unresolved alerts
 unsigned long buttonPressStart    = 0;
+
+// Hardware Interrupt Handler: Latches SOS immediately even during blocking network calls
+void IRAM_ATTR onSosInterrupt() {
+  sosTriggerPending = true;
+}
 
 // 2-Second Sampling Window Peak-Hold (Guarantees fast transient shakes are never lost)
 float peakAccelInWindow           = 9.81;
@@ -288,8 +294,12 @@ void setup() {
   Serial.println("        Cloud-Connected Node           ");
   Serial.println("========================================");
 
-  // ---------- Pin Modes ----------
-  pinMode(SOS_BUTTON_PIN, INPUT_PULLUP);
+  // ---------- Pin Modes & Hardware Interrupts ----------
+  pinMode(SOS_BUTTON_PIN1, INPUT_PULLUP);
+  pinMode(SOS_BUTTON_PIN2, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(SOS_BUTTON_PIN1), onSosInterrupt, FALLING);
+  attachInterrupt(digitalPinToInterrupt(SOS_BUTTON_PIN2), onSosInterrupt, FALLING);
+
   pinMode(GREEN_LED, OUTPUT);
   pinMode(RED_LED, OUTPUT);
   pinMode(BUZZER, OUTPUT);
@@ -330,15 +340,10 @@ void setup() {
 // MAIN LOOP
 // ==================================================
 void loop() {
-  // 1. Read SOS Button (D1, Active-LOW with 20ms debounce filter)
-  bool pinIsLow = (digitalRead(SOS_BUTTON_PIN) == LOW);
-  bool buttonCurrentlyPressed = false;
-  if (pinIsLow) {
-    delay(10);
-    if (digitalRead(SOS_BUTTON_PIN) == LOW) {
-      buttonCurrentlyPressed = true;
-    }
-  }
+  // 1. Read SOS Button (Supports both D1 and D5 wiring)
+  bool d1Pressed = (digitalRead(SOS_BUTTON_PIN1) == LOW);
+  bool d5Pressed = (digitalRead(SOS_BUTTON_PIN2) == LOW);
+  bool buttonCurrentlyPressed = (d1Pressed || d5Pressed);
 
   if (buttonCurrentlyPressed) {
     if (buttonPressStart == 0) {
@@ -445,11 +450,12 @@ void loop() {
     Serial.println("----------------------------------------");
     Serial.printf("Temp: %.1f C (Lim: %.1f) | Hum: %.1f %% | Gas: %d ADC (Lim: %d)\n",
                   temperature, THRESHOLD_TEMP_CELSIUS, humidity, gasValue, THRESHOLD_GAS_ADC);
-    Serial.printf("Accel Peak: %.2f m/s2 | Gyro Peak: %.2f rad/s | Fall: %s | SOS: %s (Pin D1: %s)\n",
+    Serial.printf("Accel Peak: %.2f m/s2 | Gyro Peak: %.2f rad/s | Fall: %s | SOS: %s (D1:%s, D5:%s)\n",
                   accelToSend, peakGyroInWindow,
                   fallToSend ? "YES" : "NO",
                   (buttonCurrentlyPressed || sosTriggerPending) ? "ACTIVE" : "NO",
-                  digitalRead(SOS_BUTTON_PIN) == LOW ? "PRESSED/GND" : "HIGH/IDLE");
+                  d1Pressed ? "LOW/PRESSED" : "HIGH",
+                  d5Pressed ? "LOW/PRESSED" : "HIGH");
     Serial.printf("Status: %s | Cloud Alert Active: %s\n",
                   isDanger ? "DANGER" : (isWarning ? "WARNING" : "SAFE"),
                   cloudAlertActive ? "YES (Awaiting Supervisor)" : "NO");
