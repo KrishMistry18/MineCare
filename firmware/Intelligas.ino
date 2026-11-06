@@ -215,8 +215,9 @@ void sendTelemetryToCloud(
 
   if (isHttps) {
     secureClient.setInsecure();
-    // Reduce BearSSL memory footprint from 32KB down to 1.5KB to prevent out-of-memory socket drops
-    secureClient.setBufferSizes(1024, 512);
+    // Render/Cloudflare sends a 3,358-byte TLS certificate chain (Google Trust Services).
+    // Allocate 4096 bytes RX buffer so BearSSL never overflows and drops connection (HTTP -5).
+    secureClient.setBufferSizes(4096, 512);
     secureClient.setTimeout(7000);
     beginOk = http.begin(secureClient, url);
   } else {
@@ -265,9 +266,17 @@ void sendTelemetryToCloud(
       Serial.printf("[CLOUD] Transmission status: HTTP %d (%s | Heap: %d bytes)\n",
                     httpCode, http.errorToString(httpCode).c_str(), ESP.getFreeHeap());
       if (sos) {
-        // Transmission failed — re-latch SOS so the next interval retries delivery
-        sosTriggerPending = true;
-        Serial.println("[SOS] Cloud transmission failed — will retry dispatch in next packet.");
+        // Transmission failed — allow up to 3 retry attempts before clearing local trigger to prevent infinite stuck DANGER loop
+        static int sosRetries = 0;
+        if (sosRetries < 3) {
+          sosTriggerPending = true;
+          sosRetries++;
+          Serial.printf("[SOS] Cloud transmission failed — will retry dispatch (attempt %d/3).\n", sosRetries);
+        } else {
+          sosRetries = 0;
+          sosTriggerPending = false;
+          Serial.println("[SOS] Max retries reached — cleared local latch. Press button again if needed.");
+        }
       }
       if (httpCode > 0) {
         String resp = http.getString();
