@@ -38,7 +38,7 @@ export const ControlRoomDashboard: React.FC<ControlRoomDashboardProps> = ({
   const totalHelmets = helmets.length;
   const offlineHelmets = helmets.filter(h => h.connectivity === 'OFFLINE').length;
   const reportingHelmets = helmets.filter(h => h.connectivity !== 'OFFLINE' && h.hasData).length;
-  const safeHelmets = helmets.filter(h => h.safety.status === 'SAFE' && h.connectivity === 'ONLINE' && h.hasData).length;
+  const safeHelmets = helmets.filter(h => h.safety.status === 'SAFE' && h.connectivity !== 'OFFLINE' && h.hasData).length;
 
   // Active alerts that are unresolved
   const activeAlertsList = alerts.filter(a => !a.resolved);

@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 function backendApiPlugin(): Plugin {
@@ -29,9 +29,10 @@ function backendApiPlugin(): Plugin {
 }
 
 // https://vite.dev/config/
-export default defineConfig(({ command }) => {
+export default defineConfig(({ command, mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
   const isBuild = command === 'build';
-  const useLocalBackend = process.env.VITE_USE_LOCAL_BACKEND === 'true';
+  const useLocalBackend = env.VITE_USE_LOCAL_BACKEND === 'true' || process.env.VITE_USE_LOCAL_BACKEND === 'true';
 
   return {
     server: {

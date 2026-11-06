@@ -42,6 +42,7 @@ export class SafetyEngine {
     gasValue: number;
     totalAcceleration: number;
     sosPressed: boolean;
+    fallDetected?: boolean;
     dhtValid?: boolean;
     mpuValid?: boolean;
   }): SafetyEvaluation {
@@ -52,7 +53,7 @@ export class SafetyEngine {
 
     // Evaluate individual hazard conditions
     // Fall impact is only trustworthy when MPU6050 is valid
-    const isFall = mpuValid && packet.totalAcceleration > PROTOTYPE_LIMITS.FALL_ACCELERATION;
+    const isFall = mpuValid && (Boolean(packet.fallDetected) || packet.totalAcceleration > PROTOTYPE_LIMITS.FALL_ACCELERATION);
     const isSos = Boolean(packet.sosPressed);
     const isHighGas = packet.gasValue > PROTOTYPE_LIMITS.HIGH_GAS_RAW;
     // High temperature is only trustworthy when DHT22 is valid

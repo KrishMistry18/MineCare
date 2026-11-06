@@ -24,7 +24,8 @@ CLOUD INTEGRATION:
   Device Token: mc_dev_MC-001
 
 LIFECYCLE BEHAVIOR:
-  - When SOS button is pressed or sensor hazard occurs, alert is transmitted to cloud.
+  - When SOS button is pressed, lighter gas/heat detected, or helmet is shaken hard (fall),
+    alert is transmitted to the cloud and hardware triggers alarms.
   - Alert PERSISTS in active state until manually resolved by supervisor in MineCare dashboard.
   - Helmet hardware buzzes and illuminates Red LED while alert is active.
   - Once supervisor resolves alert from the dashboard, cloud response clears alarm and restores Green LED.
@@ -42,17 +43,16 @@ LIFECYCLE BEHAVIOR:
 // ==================================================
 // 1. WI-FI & CLOUD CONFIGURATION
 // ==================================================
-// --> Enter your Wi-Fi network credentials here (must match the Wi-Fi your laptop/PC is on):
-const char* WIFI_SSID     = "YOUR_WIFI_NAME";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+// --> Enter your Wi-Fi network credentials here:
+const char* WIFI_SSID     = "Airtel_Richard";
+const char* WIFI_PASSWORD = "Maxwell@1,2,3";
 
 // --> Backend Telemetry Endpoint:
-// OPTION A (Recommended for Local Dev): Direct connection to your PC running 'npm run dev':
-// (Your PC's IP on your Wi-Fi network is 192.168.1.2, port 5173)
-const char* BACKEND_URL   = "http://192.168.1.2:5173/api/v1/telemetry";
+// OPTION A (Cloud Render Deployment - used by live Vercel dashboard):
+const char* BACKEND_URL   = "https://minecare-backend.onrender.com/api/v1/telemetry";
 
-// OPTION B (Cloud Render Deployment):
-// const char* BACKEND_URL = "https://minecare-backend.onrender.com/api/v1/telemetry";
+// OPTION B (Local Dev Server running on your PC):
+// const char* BACKEND_URL = "http://192.168.1.2:5173/api/v1/telemetry";
 
 const char* HELMET_ID     = "MC-001";
 const char* DEVICE_TOKEN  = "mc_dev_MC-001"; // Pre-authorized dev token on backend
@@ -61,7 +61,31 @@ const char* DEVICE_TOKEN  = "mc_dev_MC-001"; // Pre-authorized dev token on back
 const unsigned long TELEMETRY_INTERVAL_MS = 2000;
 
 // ==================================================
-// 2. PIN DEFINITIONS
+// 2. THRESHOLD CALIBRATION (ROOM CONDITIONS VS HAZARDS)
+// ==================================================
+// 1. Gas Threshold (MQ-2 raw ADC: 0 - 1023)
+// - Clean room air: typically 150 - 320 ADC.
+// - Lighter butane release or flame smoke: surges to 550 - 900+ ADC.
+// - 500 ADC ensures normal room air stays completely SAFE, but bringing a lighter triggers WARNING.
+const int   THRESHOLD_GAS_ADC          = 500;
+
+// 2. Temperature Threshold (DHT22: Celsius)
+// - Normal room temperature: 24.0°C - 30.0°C.
+// - Lighter flame plume nearby: 38.0°C - 50.0°C.
+// - 38.0°C triggers quickly and safely with warm air without melting the plastic sensor casing.
+const float THRESHOLD_TEMP_CELSIUS     = 38.0;
+
+// 3. Fall & Motion Impact Thresholds (MPU6050)
+// - Resting acceleration (1G gravity): ~9.81 m/s².
+// - Shaking vigorously or dropping: spikes to 16.0 - 28.0 m/s².
+const float THRESHOLD_FALL_ACCEL_MS2   = 14.5; // m/s² (1.48G impact)
+
+// - Gyroscope rotational angular velocity (rad/s)
+// - At rest: ~0.00 rad/s. Shaking / twisting wrist: 3.5 - 8.0 rad/s (~200° - 460°/s).
+const float THRESHOLD_GYRO_SHAKE_RADS  = 3.8;  // rad/s
+
+// ==================================================
+// 3. PIN DEFINITIONS
 // ==================================================
 #define DHTPIN          D2
 #define DHTTYPE         DHT22
@@ -76,22 +100,27 @@ const unsigned long TELEMETRY_INTERVAL_MS = 2000;
 #define BUZZER          D3
 
 // ==================================================
-// 3. OBJECTS & STATE
+// 4. OBJECTS & STATE
 // ==================================================
 DHT dht(DHTPIN, DHTTYPE);
 Adafruit_MPU6050 mpu;
 
-unsigned long lastTelemetryMs  = 0;
-unsigned long sequenceNumber    = 0;
-bool mpuAvailable               = false;
+unsigned long lastTelemetryMs    = 0;
+unsigned long sequenceNumber      = 0;
+bool mpuAvailable                 = false;
 
 // Alert Lifecycle Tracking
-bool sosTriggerPending          = false; // Set when button is pressed, cleared once cloud receives it
-bool cloudAlertActive           = false; // Kept true as long as cloud reports active unresolved alerts
-unsigned long buttonPressStart  = 0;
+bool sosTriggerPending            = false; // Set when button is pressed, cleared once cloud receives it
+bool fallTriggerPending           = false; // Latches peak fall/shake event across 2000ms window
+bool cloudAlertActive             = false; // Kept true as long as cloud reports active unresolved alerts
+unsigned long buttonPressStart    = 0;
+
+// 2-Second Sampling Window Peak-Hold (Guarantees fast transient shakes are never lost)
+float peakAccelInWindow           = 9.81;
+float peakGyroInWindow            = 0.0;
 
 // ==================================================
-// 4. WI-FI HELPER
+// 5. WI-FI HELPER
 // ==================================================
 void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
@@ -124,7 +153,7 @@ void connectWiFi() {
 }
 
 // ==================================================
-// 5. CLOUD TELEMETRY TRANSMITTER (HTTPS)
+// 6. CLOUD TELEMETRY TRANSMITTER
 // ==================================================
 void sendTelemetryToCloud(
     float temp, float hum, int gas,
@@ -220,6 +249,12 @@ void sendTelemetryToCloud(
         sosTriggerPending = false;
         Serial.println("[SOS] Emergency packet successfully delivered to cloud.");
       }
+
+      // If this packet delivered the Fall event, clear pending trigger flag
+      if (fall) {
+        fallTriggerPending = false;
+        Serial.println("[FALL] Fall/Impact event successfully delivered to cloud.");
+      }
     } else {
       Serial.printf("[CLOUD] Transmission status: HTTP %d\n", httpCode);
       if (httpCode > 0) {
@@ -275,12 +310,6 @@ void setup() {
   }
 
   // ---------- Wi-Fi ----------
-  if (strcmp(WIFI_SSID, "YOUR_WIFI_NAME") == 0) {
-    Serial.println("----------------------------------------------------------------");
-    Serial.println("[CONFIGURATION REQUIRED] Please update WIFI_SSID & WIFI_PASSWORD");
-    Serial.println("in Intelligas.ino with your actual Wi-Fi network credentials!");
-    Serial.println("----------------------------------------------------------------");
-  }
   Serial.printf("[INIT] Target Backend: %s\n", BACKEND_URL);
   Serial.printf("[INIT] Helmet ID:      %s\n", HELMET_ID);
 
@@ -307,6 +336,7 @@ void loop() {
     // Check if worker holds button for 3 seconds to cancel locally
     if (millis() - buttonPressStart >= 3000) {
       sosTriggerPending = false;
+      fallTriggerPending = false;
       cloudAlertActive = false;
       Serial.println("[SOS] Emergency cancelled locally by 3-second button hold.");
       // Beep once to indicate cancel
@@ -329,6 +359,7 @@ void loop() {
   float ax = 0, ay = 0, az = 9.81;
   float gx = 0, gy = 0, gz = 0;
   float totalAcceleration = 9.81;
+  float gyroRotationSpeed = 0.0;
 
   if (mpuAvailable) {
     sensors_event_t accel, gyro, mpuTemp;
@@ -342,17 +373,35 @@ void loop() {
     gx = gyro.gyro.x;
     gy = gyro.gyro.y;
     gz = gyro.gyro.z;
+    gyroRotationSpeed = sqrt(gx * gx + gy * gy + gz * gz); // rad/s
+
+    // Track maximum peak values during the 2-second transmission window
+    if (totalAcceleration > peakAccelInWindow) {
+      peakAccelInWindow = totalAcceleration;
+    }
+    if (gyroRotationSpeed > peakGyroInWindow) {
+      peakGyroInWindow = gyroRotationSpeed;
+    }
   }
 
-  bool fallDetected = (totalAcceleration > 15.0);
+  // Detect fall / violent impact:
+  // Trigger if linear acceleration exceeds 14.5 m/s² OR angular gyro speed exceeds 3.8 rad/s (~220°/s)
+  bool instantaneousFall = (totalAcceleration > THRESHOLD_FALL_ACCEL_MS2 || gyroRotationSpeed > THRESHOLD_GYRO_SHAKE_RADS);
+  if (instantaneousFall) {
+    fallTriggerPending = true;
+    // Guarantee that peak acceleration reflects an impact (> 15.5 m/s²) so backend triggers DANGER
+    if (peakAccelInWindow < 16.5) {
+      peakAccelInWindow = 16.5;
+    }
+  }
 
   // 3. Safety Evaluation & Actuators
   // An emergency stays active if:
   // - SOS button is pressed or pending delivery
-  // - Fall impact is detected
+  // - Fall impact is detected (instantaneous or pending delivery in window)
   // - Cloud alert is currently active (waiting for supervisor to resolve from Alert section)
-  bool isDanger = (buttonCurrentlyPressed || sosTriggerPending || fallDetected || cloudAlertActive);
-  bool isWarning = (!isDanger && (gasValue > 800 || temperature > 40.0));
+  bool isDanger = (buttonCurrentlyPressed || sosTriggerPending || fallTriggerPending || instantaneousFall || cloudAlertActive);
+  bool isWarning = (!isDanger && (gasValue > THRESHOLD_GAS_ADC || temperature > THRESHOLD_TEMP_CELSIUS));
 
   if (isDanger) {
     digitalWrite(GREEN_LED, LOW);
@@ -373,26 +422,36 @@ void loop() {
   if (currentMs - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
     lastTelemetryMs = currentMs;
 
+    // Send the peak acceleration observed during this window so telemetry waveform captures the shock
+    float accelToSend = (peakAccelInWindow > totalAcceleration) ? peakAccelInWindow : totalAcceleration;
+    bool  fallToSend  = (fallTriggerPending || instantaneousFall);
+
     // Transmit to MineCare Cloud
     sendTelemetryToCloud(
       temperature, humidity, gasValue,
-      ax, ay, az, totalAcceleration,
+      ax, ay, az, accelToSend,
       gx, gy, gz,
-      fallDetected, (buttonCurrentlyPressed || sosTriggerPending)
+      fallToSend, (buttonCurrentlyPressed || sosTriggerPending)
     );
 
     // Local Serial Log
     Serial.println("----------------------------------------");
-    Serial.printf("Temp: %.1f C | Hum: %.1f %% | Gas: %d ADC\n", temperature, humidity, gasValue);
-    Serial.printf("Accel: %.2f m/s2 | Fall: %s | SOS: %s\n",
-                  totalAcceleration, fallDetected ? "YES" : "NO",
+    Serial.printf("Temp: %.1f C (Lim: %.1f) | Hum: %.1f %% | Gas: %d ADC (Lim: %d)\n",
+                  temperature, THRESHOLD_TEMP_CELSIUS, humidity, gasValue, THRESHOLD_GAS_ADC);
+    Serial.printf("Accel Peak: %.2f m/s2 | Gyro Peak: %.2f rad/s | Fall: %s | SOS: %s\n",
+                  accelToSend, peakGyroInWindow,
+                  fallToSend ? "YES" : "NO",
                   (buttonCurrentlyPressed || sosTriggerPending) ? "ACTIVE" : "NO");
     Serial.printf("Status: %s | Cloud Alert Active: %s\n",
                   isDanger ? "DANGER" : (isWarning ? "WARNING" : "SAFE"),
                   cloudAlertActive ? "YES (Awaiting Supervisor)" : "NO");
     Serial.println("----------------------------------------");
+
+    // Reset window peak trackers for the next 2-second interval
+    peakAccelInWindow = 9.81;
+    peakGyroInWindow  = 0.0;
   }
 
-  // Small delay to prevent watchdog timer reset while maintaining responsive button reading
+  // Small delay to prevent watchdog timer reset while maintaining 20Hz sensor sampling
   delay(50);
 }

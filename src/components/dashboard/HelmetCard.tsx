@@ -25,7 +25,6 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
   const { telemetry, safety, connectivity, hasData, dataLoadingState } = helmet;
 
   const isOffline = connectivity === 'OFFLINE';
-  const isStale = connectivity === 'STALE';
   const isDanger = !isOffline && safety.status === 'DANGER';
   const isWarning = !isOffline && safety.status === 'WARNING';
   const isSensorFault = !isOffline && safety.status === 'SENSOR_FAULT';
@@ -48,8 +47,6 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
           ? 'border-red-500/70 bg-red-950/10 shadow-[0_0_15px_rgba(239,68,68,0.1)]'
           : isWarning || isSensorFault
           ? 'border-amber-500/60 bg-amber-950/10'
-          : isStale
-          ? 'border-amber-500/40 bg-amber-950/5'
           : 'border-[#182335] hover:border-[#283850]'
       }`}
     >
@@ -102,15 +99,10 @@ export const HelmetCard: React.FC<HelmetCardProps> = ({ helmet, onClick }) => {
               <span>•</span>
               <span>SENSOR FAULT</span>
             </span>
-          ) : isStale ? (
-            <span className="bg-[#291b07] border border-[#78350f] text-[#fbbf24] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
-              <span>•</span>
-              <span>STALE</span>
-            </span>
           ) : (
             <span className="bg-[#0b241b] border border-[#164e3b] text-[#34d399] text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1 font-mono">
               <span>•</span>
-              <span>SAFE</span>
+              <span>NORMAL</span>
             </span>
           )}
         </div>

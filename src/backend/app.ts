@@ -549,6 +549,7 @@ export class BackendApp {
           gasValue: packet.gasValue,
           totalAcceleration: packet.totalAcceleration,
           sosPressed: packet.sosPressed,
+          fallDetected: packet.fallDetected,
           dhtValid: packet.dhtValid,
           mpuValid: packet.mpuValid,
         });
