@@ -76,13 +76,13 @@ const int   THRESHOLD_GAS_ADC          = 500;
 const float THRESHOLD_TEMP_CELSIUS     = 38.0;
 
 // 3. Fall & Motion Impact Thresholds (MPU6050)
-// - Resting acceleration (1G gravity): ~9.81 m/s².
-// - Shaking vigorously or dropping: spikes to 16.0 - 28.0 m/s².
-const float THRESHOLD_FALL_ACCEL_MS2   = 14.5; // m/s² (1.48G impact)
+// - Resting acceleration on table: ~9.8 - 11.5 m/s² (due to sensor gravity + offset).
+// - Vigorous wrist shaking or impact: spikes to 18.0 - 30.0+ m/s².
+const float THRESHOLD_FALL_ACCEL_MS2   = 18.0; // m/s² (~1.8G impact)
 
 // - Gyroscope rotational angular velocity (rad/s)
-// - At rest: ~0.00 rad/s. Shaking / twisting wrist: 3.5 - 8.0 rad/s (~200° - 460°/s).
-const float THRESHOLD_GYRO_SHAKE_RADS  = 3.8;  // rad/s
+// - At rest: ~0.00 - 0.20 rad/s. Hard shaking / twisting wrist: 5.0 - 12.0+ rad/s.
+const float THRESHOLD_GYRO_SHAKE_RADS  = 5.0;  // rad/s (~290 deg/sec)
 
 // ==================================================
 // 3. PIN DEFINITIONS
@@ -398,14 +398,10 @@ void loop() {
   }
 
   // Detect fall / violent impact:
-  // Trigger if linear acceleration exceeds 14.5 m/s² OR angular gyro speed exceeds 3.8 rad/s (~220°/s)
+  // Trigger only when linear acceleration exceeds 18.0 m/s² OR angular gyro speed exceeds 5.0 rad/s
   bool instantaneousFall = (totalAcceleration > THRESHOLD_FALL_ACCEL_MS2 || gyroRotationSpeed > THRESHOLD_GYRO_SHAKE_RADS);
   if (instantaneousFall) {
     fallTriggerPending = true;
-    // Guarantee that peak acceleration reflects an impact (> 15.5 m/s²) so backend triggers DANGER
-    if (peakAccelInWindow < 16.5) {
-      peakAccelInWindow = 16.5;
-    }
   }
 
   // 3. Safety Evaluation & Actuators
@@ -459,7 +455,8 @@ void loop() {
                   cloudAlertActive ? "YES (Awaiting Supervisor)" : "NO");
     Serial.println("----------------------------------------");
 
-    // Reset window peak trackers for the next interval
+    // Reset window peak trackers and fall event for the next interval
+    fallTriggerPending = false;
     peakAccelInWindow = 9.81;
     peakGyroInWindow  = 0.0;
 
