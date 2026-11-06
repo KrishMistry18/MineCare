@@ -202,7 +202,7 @@ void sendTelemetryToCloud(
   );
 
   HTTPClient http;
-  http.setTimeout(4500);
+  http.setTimeout(3000);
 
   String url = String(BACKEND_URL);
   bool isHttps = url.startsWith("https://");
@@ -215,17 +215,18 @@ void sendTelemetryToCloud(
     secureClient.setInsecure();
     // Reduce BearSSL memory footprint from 32KB down to 1.5KB to prevent out-of-memory socket drops
     secureClient.setBufferSizes(1024, 512);
-    secureClient.setTimeout(4500);
+    secureClient.setTimeout(3000);
     beginOk = http.begin(secureClient, url);
   } else {
-    plainClient.setTimeout(4500);
+    plainClient.setTimeout(3000);
     beginOk = http.begin(plainClient, url);
   }
 
   if (beginOk) {
-    http.setReuse(true); // HTTP Keep-Alive for fast subsequent packet transmissions
+    http.setReuse(false); // Clean single-shot connections avoid reverse-proxy idle disconnects (-5)
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Device-Token", DEVICE_TOKEN);
+    http.addHeader("Connection", "close");
 
     int httpCode = http.POST(jsonBuffer);
 
@@ -267,6 +268,8 @@ void sendTelemetryToCloud(
       }
     }
     http.end();
+    secureClient.stop();
+    plainClient.stop();
   } else {
     Serial.printf("[CLOUD] Connection initiation failed to: %s (Heap: %d bytes)\n", BACKEND_URL, ESP.getFreeHeap());
   }
