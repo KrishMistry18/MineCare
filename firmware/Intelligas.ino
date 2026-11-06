@@ -57,8 +57,8 @@ const char* BACKEND_URL   = "https://minecare-backend.onrender.com/api/v1/teleme
 const char* HELMET_ID     = "MC-001";
 const char* DEVICE_TOKEN  = "mc_dev_MC-001"; // Pre-authorized dev token on backend
 
-// Transmission Interval (2000ms nominal)
-const unsigned long TELEMETRY_INTERVAL_MS = 2000;
+// Transmission Interval (1200ms nominal — guarantees fresh packet delivery well within the 8s cloud timeout)
+const unsigned long TELEMETRY_INTERVAL_MS = 1200;
 
 // ==================================================
 // 2. THRESHOLD CALIBRATION (ROOM CONDITIONS VS HAZARDS)
@@ -130,6 +130,7 @@ void connectWiFi() {
   Serial.println(WIFI_SSID);
 
   WiFi.mode(WIFI_STA);
+  WiFi.setSleepMode(WIFI_NONE_SLEEP); // Prevent Wi-Fi radio sleep to eliminate latency and dropped packets
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int attempts = 0;
@@ -213,6 +214,8 @@ void sendTelemetryToCloud(
 
   if (isHttps) {
     secureClient.setInsecure();
+    // Reduce BearSSL memory footprint from 32KB down to 1.5KB to prevent out-of-memory socket drops
+    secureClient.setBufferSizes(1024, 512);
     secureClient.setTimeout(4500);
     beginOk = http.begin(secureClient, url);
   } else {
@@ -221,6 +224,7 @@ void sendTelemetryToCloud(
   }
 
   if (beginOk) {
+    http.setReuse(true); // HTTP Keep-Alive for fast subsequent packet transmissions
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Device-Token", DEVICE_TOKEN);
 
@@ -256,7 +260,8 @@ void sendTelemetryToCloud(
         Serial.println("[FALL] Fall/Impact event successfully delivered to cloud.");
       }
     } else {
-      Serial.printf("[CLOUD] Transmission status: HTTP %d\n", httpCode);
+      Serial.printf("[CLOUD] Transmission status: HTTP %d (%s | Heap: %d bytes)\n",
+                    httpCode, http.errorToString(httpCode).c_str(), ESP.getFreeHeap());
       if (httpCode > 0) {
         String resp = http.getString();
         Serial.println(resp);
@@ -264,7 +269,7 @@ void sendTelemetryToCloud(
     }
     http.end();
   } else {
-    Serial.printf("[CLOUD] Connection initiation failed to: %s\n", BACKEND_URL);
+    Serial.printf("[CLOUD] Connection initiation failed to: %s (Heap: %d bytes)\n", BACKEND_URL, ESP.getFreeHeap());
   }
 }
 
