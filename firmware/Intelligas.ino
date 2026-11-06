@@ -417,11 +417,9 @@ void loop() {
     digitalWrite(BUZZER, LOW);
   }
 
-  // 4. Periodic Cloud Telemetry Transmission (every 2 seconds)
+  // 4. Periodic Cloud Telemetry Transmission (every 2.5 seconds)
   unsigned long currentMs = millis();
   if (currentMs - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
-    lastTelemetryMs = currentMs;
-
     // Send the peak acceleration observed during this window so telemetry waveform captures the shock
     float accelToSend = (peakAccelInWindow > totalAcceleration) ? peakAccelInWindow : totalAcceleration;
     bool  fallToSend  = (fallTriggerPending || instantaneousFall);
@@ -447,9 +445,13 @@ void loop() {
                   cloudAlertActive ? "YES (Awaiting Supervisor)" : "NO");
     Serial.println("----------------------------------------");
 
-    // Reset window peak trackers for the next 2-second interval
+    // Reset window peak trackers for the next interval
     peakAccelInWindow = 9.81;
     peakGyroInWindow  = 0.0;
+
+    // IMPORTANT: Reset lastTelemetryMs AFTER the network call finishes so the ESP8266
+    // has a guaranteed rest interval between heavy TLS handshakes!
+    lastTelemetryMs = millis();
   }
 
   // Small delay to prevent watchdog timer reset while maintaining 20Hz sensor sampling
