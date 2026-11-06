@@ -348,6 +348,8 @@ void loop() {
   if (buttonCurrentlyPressed) {
     if (buttonPressStart == 0) {
       buttonPressStart = millis();
+      Serial.printf("[SOS] Button pressed! Detected on: %s\n",
+                    (d1Pressed && d5Pressed) ? "D1 & D5" : d1Pressed ? "Pin D1" : "Pin D5");
     }
     sosTriggerPending = true;
 
