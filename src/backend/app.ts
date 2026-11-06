@@ -2010,18 +2010,19 @@ export class BackendApp {
           // Realtime Broadcast
           RealtimePublisher.getInstance().publish('alerts', 'UPDATE', alert);
 
-          // If no remaining active alerts for this helmet, restore helmet status to SAFE
+          // Re-evaluate helmet status based on remaining active alerts for this helmet
           try {
             const activeAlerts = await this.db.getActiveAlerts();
             const helmetRemaining = activeAlerts.filter(
               (a) => a.helmet_id === alert.helmet_id && a.id !== alert.id && a.status !== 'RESOLVED'
             );
-            if (helmetRemaining.length === 0) {
-              await this.db.updateHelmet(alert.helmet_id, { status: 'SAFE' });
-              const updatedHelmet = await this.db.getHelmetWithDetails(alert.helmet_id);
-              if (updatedHelmet) {
-                RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
-              }
+            const remainingCritical = helmetRemaining.some((a) => a.severity === 'CRITICAL');
+            const remainingWarning = helmetRemaining.some((a) => a.severity === 'WARNING');
+            const newStatus: SafetyStatus = remainingCritical ? 'DANGER' : remainingWarning ? 'WARNING' : 'SAFE';
+            await this.db.updateHelmet(alert.helmet_id, { status: newStatus });
+            const updatedHelmet = await this.db.getHelmetWithDetails(alert.helmet_id);
+            if (updatedHelmet) {
+              RealtimePublisher.getInstance().publish('helmets', 'UPDATE', updatedHelmet);
             }
           } catch {
             // non-blocking

@@ -799,17 +799,25 @@ export class TelemetryService {
       alert.resolvedAt = new Date().toISOString();
       if (notes) alert.supervisorNotes = notes;
 
-      // Check if helmet still has any active unresolved alerts
+      // Re-evaluate helmet status based on remaining active alerts for this helmet
       const remainingForHelmet = this.alerts.filter((a) => a.helmetId === alert.helmetId && !a.resolved);
-      if (remainingForHelmet.length === 0) {
-        const existingSafety = this.safetyStates.get(alert.helmetId);
-        if (existingSafety) {
-          existingSafety.status = 'SAFE';
+      const existingSafety = this.safetyStates.get(alert.helmetId);
+      if (existingSafety) {
+        const hasCritical = remainingForHelmet.some((a) => a.severity === 'CRITICAL');
+        const hasWarning = remainingForHelmet.some((a) => a.severity === 'WARNING');
+        existingSafety.status = hasCritical ? 'DANGER' : hasWarning ? 'WARNING' : 'SAFE';
+        if (!hasCritical && !hasWarning) {
           existingSafety.primaryTrigger = 'NOMINAL';
           existingSafety.triggerDetails = [];
           existingSafety.outputs = {
             greenLed: true,
             redLed: false,
+            buzzer: false,
+          };
+        } else if (!hasCritical) {
+          existingSafety.outputs = {
+            greenLed: false,
+            redLed: true,
             buzzer: false,
           };
         }
