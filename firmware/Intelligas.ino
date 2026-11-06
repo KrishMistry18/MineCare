@@ -202,7 +202,7 @@ void sendTelemetryToCloud(
   );
 
   HTTPClient http;
-  http.setTimeout(3000);
+  http.setTimeout(7000);
 
   String url = String(BACKEND_URL);
   bool isHttps = url.startsWith("https://");
@@ -215,10 +215,10 @@ void sendTelemetryToCloud(
     secureClient.setInsecure();
     // Reduce BearSSL memory footprint from 32KB down to 1.5KB to prevent out-of-memory socket drops
     secureClient.setBufferSizes(1024, 512);
-    secureClient.setTimeout(3000);
+    secureClient.setTimeout(7000);
     beginOk = http.begin(secureClient, url);
   } else {
-    plainClient.setTimeout(3000);
+    plainClient.setTimeout(7000);
     beginOk = http.begin(plainClient, url);
   }
 

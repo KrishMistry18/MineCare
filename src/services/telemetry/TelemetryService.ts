@@ -827,7 +827,9 @@ export class TelemetryService {
     }
 
     // Call backend authoritative endpoint
-    alertService.resolveAlert(alertId, notes).catch(() => {});
+    alertService.resolveAlert(alertId, notes).catch((err) => {
+      console.error('[TelemetryService] Failed to resolve alert on backend:', err);
+    });
   }
 
   public clearAlertHistory(): void {
