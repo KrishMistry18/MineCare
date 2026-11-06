@@ -90,8 +90,7 @@ const float THRESHOLD_GYRO_SHAKE_RADS  = 3.8;  // rad/s
 #define DHTPIN          D2
 #define DHTTYPE         DHT22
 #define MQ2_AO          A0
-#define SOS_BUTTON_PIN1 D1    // Primary SOS button pin
-#define SOS_BUTTON_PIN2 D5    // Alternate SOS button pin (supports both D1 and D5 wiring)
+#define SOS_BUTTON_PIN  D1    // SOS button pin (One leg to D1, other leg to GND)
 #define MPU_SDA         D6
 #define MPU_SCL         D7
 
@@ -287,8 +286,7 @@ void setup() {
   Serial.println("========================================");
 
   // ---------- Pin Modes ----------
-  pinMode(SOS_BUTTON_PIN1, INPUT_PULLUP);
-  pinMode(SOS_BUTTON_PIN2, INPUT_PULLUP);
+  pinMode(SOS_BUTTON_PIN, INPUT_PULLUP);
   pinMode(GREEN_LED, OUTPUT);
   pinMode(RED_LED, OUTPUT);
   pinMode(BUZZER, OUTPUT);
@@ -329,8 +327,15 @@ void setup() {
 // MAIN LOOP
 // ==================================================
 void loop() {
-  // 1. Read SOS Button (Check both D1 and D5)
-  bool buttonCurrentlyPressed = (digitalRead(SOS_BUTTON_PIN1) == LOW || digitalRead(SOS_BUTTON_PIN2) == LOW);
+  // 1. Read SOS Button (D1, Active-LOW with 20ms debounce filter)
+  bool pinIsLow = (digitalRead(SOS_BUTTON_PIN) == LOW);
+  bool buttonCurrentlyPressed = false;
+  if (pinIsLow) {
+    delay(10);
+    if (digitalRead(SOS_BUTTON_PIN) == LOW) {
+      buttonCurrentlyPressed = true;
+    }
+  }
 
   if (buttonCurrentlyPressed) {
     if (buttonPressStart == 0) {
@@ -441,10 +446,11 @@ void loop() {
     Serial.println("----------------------------------------");
     Serial.printf("Temp: %.1f C (Lim: %.1f) | Hum: %.1f %% | Gas: %d ADC (Lim: %d)\n",
                   temperature, THRESHOLD_TEMP_CELSIUS, humidity, gasValue, THRESHOLD_GAS_ADC);
-    Serial.printf("Accel Peak: %.2f m/s2 | Gyro Peak: %.2f rad/s | Fall: %s | SOS: %s\n",
+    Serial.printf("Accel Peak: %.2f m/s2 | Gyro Peak: %.2f rad/s | Fall: %s | SOS: %s (Pin D1: %s)\n",
                   accelToSend, peakGyroInWindow,
                   fallToSend ? "YES" : "NO",
-                  (buttonCurrentlyPressed || sosTriggerPending) ? "ACTIVE" : "NO");
+                  (buttonCurrentlyPressed || sosTriggerPending) ? "ACTIVE" : "NO",
+                  digitalRead(SOS_BUTTON_PIN) == LOW ? "PRESSED/GND" : "HIGH/IDLE");
     Serial.printf("Status: %s | Cloud Alert Active: %s\n",
                   isDanger ? "DANGER" : (isWarning ? "WARNING" : "SAFE"),
                   cloudAlertActive ? "YES (Awaiting Supervisor)" : "NO");
