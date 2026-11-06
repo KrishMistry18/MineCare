@@ -110,10 +110,11 @@ unsigned long sequenceNumber      = 0;
 bool mpuAvailable                 = false;
 
 // Alert Lifecycle Tracking
-bool sosTriggerPending            = false; // Set when button is pressed, cleared once cloud receives it
+bool sosTriggerPending            = false; // Set once on new button press, cleared upon transmission
+bool buttonArmed                  = true;  // Must be released before another press can trigger
+unsigned long buttonPressStartTime= 0;
 bool fallTriggerPending           = false; // Latches peak fall/shake event across window
 bool cloudAlertActive             = false; // Kept true as long as cloud reports active unresolved alerts
-unsigned long buttonPressStart    = 0;
 
 // 2-Second Sampling Window Peak-Hold (Guarantees fast transient shakes are never lost)
 float peakAccelInWindow           = 9.81;
@@ -263,6 +264,11 @@ void sendTelemetryToCloud(
     } else {
       Serial.printf("[CLOUD] Transmission status: HTTP %d (%s | Heap: %d bytes)\n",
                     httpCode, http.errorToString(httpCode).c_str(), ESP.getFreeHeap());
+      if (sos) {
+        // Transmission failed — re-latch SOS so the next interval retries delivery
+        sosTriggerPending = true;
+        Serial.println("[SOS] Cloud transmission failed — will retry dispatch in next packet.");
+      }
       if (httpCode > 0) {
         String resp = http.getString();
         Serial.println(resp);
@@ -333,32 +339,51 @@ void setup() {
 // MAIN LOOP
 // ==================================================
 void loop() {
-  // 1. Read SOS Button (Check both D1 and D5)
-  bool buttonCurrentlyPressed = (digitalRead(SOS_BUTTON_PIN1) == LOW || digitalRead(SOS_BUTTON_PIN2) == LOW);
+  // 1. Read SOS Push Button with Single-Press Debounce
+  // Button is active-LOW (wired between D5 or D1 and GND with INPUT_PULLUP)
+  bool rawPressed = (digitalRead(SOS_BUTTON_PIN1) == LOW || digitalRead(SOS_BUTTON_PIN2) == LOW);
+  unsigned long nowMs = millis();
 
-  if (buttonCurrentlyPressed) {
-    if (buttonPressStart == 0) {
-      buttonPressStart = millis();
-      Serial.println("[SOS] Button Pressed!");
-    }
-    sosTriggerPending = true;
-
-    // Check if worker holds button for 3 seconds to cancel locally
-    if (millis() - buttonPressStart >= 3000) {
-      sosTriggerPending = false;
-      fallTriggerPending = false;
-      cloudAlertActive = false;
-      Serial.println("[SOS] Emergency cancelled locally by 3-second button hold.");
-      // Beep once to indicate cancel
-      digitalWrite(BUZZER, LOW);
-      delay(200);
-      digitalWrite(BUZZER, HIGH);
-      delay(200);
-      digitalWrite(BUZZER, LOW);
-      buttonPressStart = 0;
+  if (rawPressed) {
+    // Worker is pressing the button
+    if (buttonArmed) {
+      // 30ms debounce verification to eliminate mechanical contact bounce
+      delay(30);
+      if (digitalRead(SOS_BUTTON_PIN1) == LOW || digitalRead(SOS_BUTTON_PIN2) == LOW) {
+        sosTriggerPending = true;
+        buttonArmed = false; // LOCK OUT until button is physically released
+        buttonPressStartTime = nowMs;
+        Serial.println("[SOS] Single-press detected! Emergency triggered and latched once for cloud dispatch.");
+      }
+    } else {
+      // Button is being held down — check for 3-second local cancel
+      if (buttonPressStartTime > 0 && (nowMs - buttonPressStartTime >= 3000)) {
+        sosTriggerPending = false;
+        fallTriggerPending = false;
+        cloudAlertActive = false;
+        buttonPressStartTime = 0;
+        Serial.println("[SOS] Emergency cancelled locally by 3-second button hold.");
+        // Beep confirmation
+        digitalWrite(BUZZER, LOW);
+        delay(150);
+        digitalWrite(BUZZER, HIGH);
+        delay(150);
+        digitalWrite(BUZZER, LOW);
+      }
     }
   } else {
-    buttonPressStart = 0;
+    // Worker has released the button
+    if (!buttonArmed) {
+      // 50ms release debounce: ensure contacts have completely stopped bouncing before re-arming
+      delay(50);
+      if (digitalRead(SOS_BUTTON_PIN1) == HIGH && digitalRead(SOS_BUTTON_PIN2) == HIGH) {
+        buttonArmed = true; // Re-armed! Ready to detect the next press
+        buttonPressStartTime = 0;
+        Serial.println("[SOS] Button released & re-armed. Ready for next press.");
+      }
+    } else {
+      buttonPressStartTime = 0;
+    }
   }
 
   // 2. Read Environmental & Motion Sensors
@@ -385,7 +410,7 @@ void loop() {
     gz = gyro.gyro.z;
     gyroRotationSpeed = sqrt(gx * gx + gy * gy + gz * gz); // rad/s
 
-    // Track maximum peak values during the 2-second transmission window
+    // Track maximum peak values during the transmission window
     if (totalAcceleration > peakAccelInWindow) {
       peakAccelInWindow = totalAcceleration;
     }
@@ -403,10 +428,10 @@ void loop() {
 
   // 3. Safety Evaluation & Actuators
   // An emergency stays active if:
-  // - SOS button is pressed or pending delivery
+  // - SOS button was pressed (pending delivery)
   // - Fall impact is detected (instantaneous or pending delivery in window)
   // - Cloud alert is currently active (waiting for supervisor to resolve from Alert section)
-  bool isDanger = (buttonCurrentlyPressed || sosTriggerPending || fallTriggerPending || instantaneousFall || cloudAlertActive);
+  bool isDanger = (sosTriggerPending || fallTriggerPending || instantaneousFall || cloudAlertActive);
   bool isWarning = (!isDanger && (gasValue > THRESHOLD_GAS_ADC || temperature > THRESHOLD_TEMP_CELSIUS));
 
   if (isDanger) {
@@ -423,31 +448,54 @@ void loop() {
     digitalWrite(BUZZER, LOW);
   }
 
-  // 4. Periodic Cloud Telemetry Transmission (every 2.5 seconds)
+  // 4. Periodic Cloud Telemetry Transmission
   unsigned long currentMs = millis();
   if (currentMs - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
     // Send the peak acceleration observed during this window so telemetry waveform captures the shock
     float accelToSend = (peakAccelInWindow > totalAcceleration) ? peakAccelInWindow : totalAcceleration;
     bool  fallToSend  = (fallTriggerPending || instantaneousFall);
+    bool  sosToSend   = sosTriggerPending;
+
+    // Reset pending trigger immediately so subsequent packets send false until button is pressed again
+    sosTriggerPending = false;
 
     // Transmit to MineCare Cloud
     sendTelemetryToCloud(
       temperature, humidity, gasValue,
       ax, ay, az, accelToSend,
       gx, gy, gz,
-      fallToSend, (buttonCurrentlyPressed || sosTriggerPending)
+      fallToSend, sosToSend
     );
+
+    // Re-evaluate danger status immediately after cloud response so actuators update without lag
+    bool currentDanger = (sosTriggerPending || fallTriggerPending || cloudAlertActive);
+    bool currentWarning = (!currentDanger && (gasValue > THRESHOLD_GAS_ADC || temperature > THRESHOLD_TEMP_CELSIUS));
+
+    if (currentDanger) {
+      digitalWrite(GREEN_LED, LOW);
+      digitalWrite(RED_LED, HIGH);
+      digitalWrite(BUZZER, HIGH);
+    } else if (currentWarning) {
+      digitalWrite(GREEN_LED, LOW);
+      digitalWrite(RED_LED, HIGH);
+      digitalWrite(BUZZER, LOW);
+    } else {
+      digitalWrite(GREEN_LED, HIGH);
+      digitalWrite(RED_LED, LOW);
+      digitalWrite(BUZZER, LOW);
+    }
 
     // Local Serial Log
     Serial.println("----------------------------------------");
     Serial.printf("Temp: %.1f C (Lim: %.1f) | Hum: %.1f %% | Gas: %d ADC (Lim: %d)\n",
                   temperature, THRESHOLD_TEMP_CELSIUS, humidity, gasValue, THRESHOLD_GAS_ADC);
-    Serial.printf("Accel Peak: %.2f m/s2 | Gyro Peak: %.2f rad/s | Fall: %s | SOS: %s\n",
+    Serial.printf("Accel Peak: %.2f m/s2 | Gyro Peak: %.2f rad/s | Fall: %s | SOS: %s (Button: %s)\n",
                   accelToSend, peakGyroInWindow,
                   fallToSend ? "YES" : "NO",
-                  (buttonCurrentlyPressed || sosTriggerPending) ? "ACTIVE" : "NO");
+                  (sosToSend || cloudAlertActive) ? "ACTIVE" : "NO",
+                  !buttonArmed ? "PRESSED" : "IDLE");
     Serial.printf("Status: %s | Cloud Alert Active: %s\n",
-                  isDanger ? "DANGER" : (isWarning ? "WARNING" : "SAFE"),
+                  currentDanger ? "DANGER" : (currentWarning ? "WARNING" : "SAFE"),
                   cloudAlertActive ? "YES (Awaiting Supervisor)" : "NO");
     Serial.println("----------------------------------------");
 
@@ -461,6 +509,6 @@ void loop() {
     lastTelemetryMs = millis();
   }
 
-  // Small delay to prevent watchdog timer reset while maintaining 20Hz sensor sampling
+  // Small delay to prevent watchdog timer reset while maintaining sensor sampling
   delay(50);
 }
