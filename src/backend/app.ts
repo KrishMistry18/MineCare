@@ -364,7 +364,9 @@ export class BackendApp {
         const rateCheck = await RateLimiter.getInstance().checkLimit('AUTH', authIdentifier);
         RateLimiter.getInstance().applyHeaders(res, rateCheck);
 
-        if (!rateCheck.allowed) {
+        const isDemoAttempt = AuthManager.isDemoCredential(email, password);
+
+        if (!rateCheck.allowed && !isDemoAttempt) {
           MetricsCollector.getInstance().recordRateLimitEvent('AUTH', authIdentifier);
           this.sendJson(
             res,

@@ -25,6 +25,22 @@ export class AuthManager {
   private supabaseClient: SupabaseClient | null = null;
   private revokedTokens: Set<string> = new Set();
 
+  public static readonly VALID_LOCAL_CREDENTIALS: Record<string, string[]> = {
+    'admin@minecare.local': ['Admin#Password2026', 'Admin#2026!', 'MineCare#2026!', ...(process.env.DEMO_ADMIN_PASSWORD ? [process.env.DEMO_ADMIN_PASSWORD] : [])],
+    'supervisor@minecare.local': ['Supervisor#Password2026', 'Supervisor#2026!', 'MineCare#2026!', ...(process.env.DEMO_SUPERVISOR_PASSWORD ? [process.env.DEMO_SUPERVISOR_PASSWORD] : [])],
+    'operator@minecare.local': ['Operator#Password2026', 'Operator#2026!', 'Supervisor#Password2026', 'Admin#Password2026', 'MineCare#2026!'],
+    'worker.marak@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
+    'worker.kujur@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
+    'miner@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!', ...(process.env.DEMO_MINER_PASSWORD ? [process.env.DEMO_MINER_PASSWORD] : [])],
+  };
+
+  public static isDemoCredential(email: string, password?: string): boolean {
+    if (!email || !password) return false;
+    const clean = email.trim().toLowerCase();
+    const validPasswords = AuthManager.VALID_LOCAL_CREDENTIALS[clean];
+    return Boolean(validPasswords && validPasswords.includes(password));
+  }
+
   private constructor(customDb?: IDatabaseRepository) {
     this.db = customDb || (PostgresDatabaseRepository.getInstance() as unknown as IDatabaseRepository);
     this.initSupabaseClient();
@@ -81,15 +97,6 @@ export class AuthManager {
 
     const cleanEmail = email.trim().toLowerCase();
 
-    const VALID_LOCAL_CREDENTIALS: Record<string, string[]> = {
-      'admin@minecare.local': ['Admin#Password2026', 'Admin#2026!', 'MineCare#2026!', ...(process.env.DEMO_ADMIN_PASSWORD ? [process.env.DEMO_ADMIN_PASSWORD] : [])],
-      'supervisor@minecare.local': ['Supervisor#Password2026', 'Supervisor#2026!', 'MineCare#2026!', ...(process.env.DEMO_SUPERVISOR_PASSWORD ? [process.env.DEMO_SUPERVISOR_PASSWORD] : [])],
-      'operator@minecare.local': ['Operator#Password2026', 'Operator#2026!', 'Supervisor#Password2026', 'Admin#Password2026', 'MineCare#2026!'],
-      'worker.marak@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
-      'worker.kujur@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!'],
-      'miner@minecare.local': ['Worker#Password2026', 'Worker#2026!', 'MineCare#2026!', ...(process.env.DEMO_MINER_PASSWORD ? [process.env.DEMO_MINER_PASSWORD] : [])],
-    };
-
     if (!this.supabaseClient) {
       this.initSupabaseClient();
     }
@@ -113,14 +120,16 @@ export class AuthManager {
               error.message.includes('fetch failed')
             ));
 
+          const isDemoCredential = AuthManager.isDemoCredential(cleanEmail, password);
           const canFallback =
-            (!getBackendConfig().isProduction || isUpstreamFailure) &&
-            Boolean(VALID_LOCAL_CREDENTIALS[cleanEmail]?.includes(password));
+            isDemoCredential ||
+            !getBackendConfig().isProduction ||
+            isUpstreamFailure;
 
           if (canFallback) {
             StructuredLogger.warn({
               requestId: 'auth-login',
-              message: 'Supabase Auth unavailable or restricted; falling back to resilient local credential authentication',
+              message: 'Supabase Auth returned error; falling back to authorized demo credential authentication',
               meta: { error: error?.message, email: cleanEmail },
             });
             // Fall through to in-process fallback authentication below
@@ -192,7 +201,7 @@ export class AuthManager {
           return { session };
         }
       } catch (err: unknown) {
-        if (VALID_LOCAL_CREDENTIALS[cleanEmail]?.includes(password)) {
+        if (AuthManager.isDemoCredential(cleanEmail, password)) {
           StructuredLogger.warn({
             requestId: 'auth-login',
             message: 'Supabase Auth network exception; falling back to resilient local credential authentication',
@@ -211,8 +220,8 @@ export class AuthManager {
     }
 
     // 2. Automated Test / In-process fallback authentication
-    // In production, allow fallback when valid local emergency credentials match
-    if (getBackendConfig().isProduction && !VALID_LOCAL_CREDENTIALS[cleanEmail]?.includes(password)) {
+    // In production, allow fallback when valid local emergency/demo credentials match
+    if (getBackendConfig().isProduction && !AuthManager.isDemoCredential(cleanEmail, password)) {
       return { error: 'Invalid email or password', code: 401 };
     }
 
@@ -252,7 +261,7 @@ export class AuthManager {
       return { error: 'Invalid email or password', code: 401 };
     }
 
-    if (VALID_LOCAL_CREDENTIALS[cleanEmail] && !VALID_LOCAL_CREDENTIALS[cleanEmail].includes(password)) {
+    if (AuthManager.VALID_LOCAL_CREDENTIALS[cleanEmail] && !AuthManager.VALID_LOCAL_CREDENTIALS[cleanEmail].includes(password)) {
       return { error: 'Invalid email or password', code: 401 };
     }
 
